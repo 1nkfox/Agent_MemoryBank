@@ -1,11 +1,9 @@
 """Module-local tests for M-003 VaultPolicyGuard."""
 
 import json
-import logging
 
 from memory_mcp.config import load_config
 from memory_mcp.policy import (
-    ALWAYS_DENIED,
     DRY_RUN_REQUIRED,
     PERMISSION_MATRIX,
     PolicyDecision,
