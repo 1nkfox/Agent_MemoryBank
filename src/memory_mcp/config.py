@@ -1,10 +1,13 @@
 """Configuration loader for the memory MCP server — M-011 ConfigService."""
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +94,8 @@ class ServerConfig:
 
 # --- Structured logging helpers ---
 
-def _log_structured(level: int, event: str, *, error_code: str = None, data: dict = None, function: str = "", block: str = ""):
-    entry = {
+def _log_structured(level: int, event: str, *, error_code: str | None = None, data: dict[str, Any] | None = None, function: str = "", block: str = "") -> None:
+    entry: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "level": logging.getLevelName(level),
         "module": "memory_mcp.config",
@@ -107,8 +110,8 @@ def _log_structured(level: int, event: str, *, error_code: str = None, data: dic
     logger.log(level, json.dumps(entry))
 
 
-def _sanitize_config(raw: dict) -> dict:
-    result = {}
+def _sanitize_config(raw: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
     for key, value in raw.items():
         if key == "auth" and isinstance(value, dict):
             auth_copy = dict(value)
@@ -122,7 +125,7 @@ def _sanitize_config(raw: dict) -> dict:
 
 # --- Public API ---
 
-def validate_config(config_dict: dict) -> None:
+def validate_config(config_dict: dict[str, Any]) -> None:
     for section in REQUIRED_SECTIONS:
         if section not in config_dict:
             _log_structured(
@@ -169,7 +172,7 @@ def validate_config(config_dict: dict) -> None:
         )
 
 
-def load_config(config_dict: dict) -> ServerConfig:
+def load_config(config_dict: dict[str, Any]) -> ServerConfig:
     validate_config(config_dict)
 
     vault = VaultSettings(root=config_dict["vault"]["root"])
