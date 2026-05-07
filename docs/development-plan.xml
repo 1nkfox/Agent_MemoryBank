@@ -406,9 +406,9 @@
       <verification_refs>V-M-011 V-M-012 V-M-002 V-M-003 V-M-005</verification_refs>
       <rationale>Safety, configuration, identity and path boundaries must exist before any MCP tool can safely expose Vault access.</rationale>
     </Phase>
-    <Phase id="PH-002" name="ReadOnlyMCP">
-      <step id="STEP-006" module="M-001">Expose read-only MCP tools over Streamable HTTP.</step>
-      <step id="STEP-007" module="M-004">Implement VaultReadService.</step>
+    <Phase id="PH-002" name="ReadOnlyMCP" status="complete" gate="PG-002" gate_passed="true">
+      <step id="STEP-006" module="M-001" status="complete" completed_at="2026-05-08">Expose read-only MCP tools over Streamable HTTP.</step>
+      <step id="STEP-007" module="M-004" status="complete" completed_at="2026-05-08">Implement VaultReadService.</step>
       <verification_refs>V-M-001 V-M-004 DF-001</verification_refs>
       <rationale>Read-only execution validates transport, identity, policy and path resolution before mutations are introduced.</rationale>
     </Phase>
