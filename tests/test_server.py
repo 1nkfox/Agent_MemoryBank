@@ -3,10 +3,8 @@
 import json
 import logging
 
-import pytest
-
 from memory_mcp.config import load_config
-from memory_mcp.server import ToolResult, handle_tool_call, register_tool
+from memory_mcp.server import ToolResult, handle_tool_call
 
 READONLY_KEY = "test-key-readonly-001"
 

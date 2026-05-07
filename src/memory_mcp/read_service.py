@@ -12,7 +12,7 @@ from memory_mcp.observability import (
     log_trace_anchor,
     new_trace_id,
 )
-from memory_mcp.policy import PolicyDecision, authorize_operation
+from memory_mcp.policy import authorize_operation
 from memory_mcp.vault_fs import (
     PathTraversalError,
     PathValidationError,

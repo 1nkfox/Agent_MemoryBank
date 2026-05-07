@@ -9,7 +9,6 @@ from typing import Any, Callable
 from memory_mcp.auth import AgentIdentity, AuthError, resolve_identity
 from memory_mcp.config import ServerConfig
 from memory_mcp.observability import (
-    ErrorCode,
     log_trace_anchor,
     new_trace_id,
 )
@@ -37,7 +36,7 @@ def register_tool(name: str, handler: ToolHandler) -> None:
     tools[name] = handler
 
 
-def health_check(config: ServerConfig) -> dict:
+def health_check(config: ServerConfig) -> dict[str, Any]:
     return {
         "status": "ok",
         "modules": [
@@ -54,10 +53,10 @@ def health_check(config: ServerConfig) -> dict:
 def _handler_read_note(
     identity: AgentIdentity,
     profile: str,
-    params: dict,
+    params: dict[str, Any],
     config: ServerConfig,
     trace_id: str,
-) -> dict:
+) -> dict[str, Any]:
     path = params.get("path", "")
     result = _svc_read_note(profile, path, config)
     return {
@@ -73,7 +72,7 @@ def _handler_read_note(
 def handle_tool_call(
     tool_name: str,
     api_key: str,
-    params: dict,
+    params: dict[str, Any],
     config: ServerConfig,
 ) -> ToolResult:
     trace_id = new_trace_id()
