@@ -1,0 +1,486 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GRACEDevelopmentPlan id="DEV-ROOT-001" project="ObsidianMemoryMCP" status="approved" version="1.0">
+  <Metadata id="DEV-META-001">
+    <title>Development Plan for Obsidian Memory MCP Server</title>
+    <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
+    <approval>Architecture approved by user; this plan is the execution baseline.</approval>
+  </Metadata>
+
+  <ArchitecturePrinciples id="DEV-PRINCIPLES-001">
+    <principle id="DEV-P-001">Vault Markdown files are the source of truth.</principle>
+    <principle id="DEV-P-002">Index, embeddings, audit projections and wiki pages are derivative layers.</principle>
+    <principle id="DEV-P-003">All writes are planned through policy, change planning, lock/revision and audit boundaries.</principle>
+    <principle id="DEV-P-004">Mutation services return affected_paths; index refresh is coordinated by entrypoint or background worker.</principle>
+    <principle id="DEV-P-005">No delete, bulk move, unrestricted rename or direct autonomous Wiki writes in MVP.</principle>
+  </ArchitecturePrinciples>
+
+  <ModuleContracts id="MODULES-001">
+    <Module id="M-001" name="MCPServerEntrypoint" type="ENTRY_POINT" verification_ref="V-M-001">
+      <purpose>Exposes Streamable HTTP MCP tools and coordinates auth, policy, mutation, retrieval, index refresh and health endpoints.</purpose>
+      <scope>Tool registration, request routing, auth/policy orchestration, service invocation, affected_paths handoff, health/admin endpoints.</scope>
+      <depends>M-002 M-003 M-004 M-008 M-010 M-014 M-017 M-018 M-019 M-012</depends>
+      <target_path>src/memory_mcp/server.py</target_path>
+      <test_path>tests/test_server.py</test_path>
+      <public_interfaces>
+        <fn-read_note id="M-001-FN-001" />
+        <fn-search_notes id="M-001-FN-002" />
+        <fn-create_note id="M-001-FN-003" />
+        <fn-append_note id="M-001-FN-004" />
+        <fn-edit_note id="M-001-FN-005" />
+        <fn-write_note id="M-001-FN-006" />
+        <fn-promote_note id="M-001-FN-007" />
+        <fn-propose_wiki_update id="M-001-FN-008" />
+        <fn-refresh_paths id="M-001-FN-009" />
+        <fn-health_check id="M-001-FN-010" />
+      </public_interfaces>
+      <observability>Must create trace_id and emit tool routing, policy outcome and service result anchors.</observability>
+      <rationale>Central orchestration keeps MCP transport thin while preventing service-to-service cycles such as mutation directly refreshing index.</rationale>
+    </Module>
+
+    <Module id="M-002" name="AuthIdentityService" type="CORE_LOGIC" verification_ref="V-M-002">
+      <purpose>Resolves agent identity, API key, role and policy profile.</purpose>
+      <scope>API key validation, identity mapping, profile resolution, invalid credential rejection.</scope>
+      <depends>M-011 M-012</depends>
+      <target_path>src/memory_mcp/auth.py</target_path>
+      <test_path>tests/test_auth.py</test_path>
+      <public_interfaces>
+        <fn-resolve_identity id="M-002-FN-001" />
+        <type-AgentIdentity id="M-002-TYPE-001" />
+        <type-PolicyProfile id="M-002-TYPE-002" />
+      </public_interfaces>
+      <observability>Emit auth.identity.resolved or auth.identity.rejected without logging secrets.</observability>
+      <rationale>Identity resolution is separated from policy decisions so credentials and authorization rules remain independently testable.</rationale>
+    </Module>
+
+    <Module id="M-003" name="VaultPolicyGuard" type="CORE_LOGIC" verification_ref="V-M-003">
+      <purpose>Enforces allowlist, denylist, no-delete, no-bulk-move, dry-run, propose-only and symlink-deny policies.</purpose>
+      <scope>Path policy, operation capability matrix, profile-specific permissions, write restrictions, propose-only enforcement.</scope>
+      <depends>M-002 M-011 M-012</depends>
+      <target_path>src/memory_mcp/policy.py</target_path>
+      <test_path>tests/test_policy.py</test_path>
+      <public_interfaces>
+        <fn-authorize_operation id="M-003-FN-001" />
+        <fn-check_path_policy id="M-003-FN-002" />
+        <fn-filter_search_results id="M-003-FN-003" />
+        <type-PolicyDecision id="M-003-TYPE-001" />
+      </public_interfaces>
+      <observability>Emit policy.decision for every read, search, mutation, promotion and wiki operation.</observability>
+      <rationale>Centralized policy prevents inconsistent enforcement across tools and reduces the damage radius of autonomous agents.</rationale>
+    </Module>
+
+    <Module id="M-004" name="VaultReadService" type="CORE_LOGIC" verification_ref="V-M-004">
+      <purpose>Provides safe read/list/exists/metadata operations over allowed Vault paths.</purpose>
+      <scope>Read note content, list allowed paths, check file existence, compute metadata and revision for allowed files.</scope>
+      <depends>M-003 M-005 M-012</depends>
+      <target_path>src/memory_mcp/read_service.py</target_path>
+      <test_path>tests/test_read_service.py</test_path>
+      <public_interfaces>
+        <fn-read_note id="M-004-FN-001" />
+        <fn-check_file_exists id="M-004-FN-002" />
+        <fn-list_allowed_paths id="M-004-FN-003" />
+        <fn-get_note_metadata id="M-004-FN-004" />
+      </public_interfaces>
+      <observability>Emit read.started and read.completed with path and revision metadata only after policy approval.</observability>
+      <rationale>Read operations still need policy enforcement because private Vault paths must not leak through convenience tools.</rationale>
+    </Module>
+
+    <Module id="M-005" name="VaultFilesystemRepository" type="DATA_LAYER" verification_ref="V-M-005">
+      <purpose>Performs normalized path resolution, symlink denial, file reads, metadata inspection and atomic writes.</purpose>
+      <scope>Vault root confinement, path traversal prevention, symlink checks, file IO, atomic write primitive and move primitive.</scope>
+      <depends>M-011 M-012</depends>
+      <target_path>src/memory_mcp/vault_fs.py</target_path>
+      <test_path>tests/test_vault_fs.py</test_path>
+      <public_interfaces>
+        <fn-resolve_vault_path id="M-005-FN-001" />
+        <fn-read_file id="M-005-FN-002" />
+        <fn-write_file_atomic id="M-005-FN-003" />
+        <fn-move_file_atomic id="M-005-FN-004" />
+        <fn-compute_revision id="M-005-FN-005" />
+      </public_interfaces>
+      <observability>Emit path.resolved, path.denied, vault.atomic_write.completed and vault.atomic_move.completed.</observability>
+      <rationale>Filesystem safety is isolated so every service uses the same normalized path and symlink denial semantics.</rationale>
+    </Module>
+
+    <Module id="M-006" name="ChangePlanner" type="CORE_LOGIC" verification_ref="V-M-006">
+      <purpose>Builds dry-run diffs, validates constrained patches and creates executable mutation plans.</purpose>
+      <scope>Patch validation, dry-run diff generation, post-apply Markdown validation, mutation plan creation.</scope>
+      <depends>M-003 M-005 M-007 M-015 M-012</depends>
+      <target_path>src/memory_mcp/change_planner.py</target_path>
+      <test_path>tests/test_change_planner.py</test_path>
+      <public_interfaces>
+        <fn-prepare_change id="M-006-FN-001" />
+        <fn-preview_diff id="M-006-FN-002" />
+        <fn-validate_patch id="M-006-FN-003" />
+        <type-MutationPlan id="M-006-TYPE-001" />
+      </public_interfaces>
+      <observability>Emit change.plan.created, patch.validation.completed and diff.generated.</observability>
+      <rationale>Planning changes before execution makes autonomous writes reviewable and protects against free-form destructive edits.</rationale>
+    </Module>
+
+    <Module id="M-007" name="LockAndRevisionService" type="CORE_LOGIC" verification_ref="V-M-007">
+      <purpose>Provides hybrid locks and sha256(content) optimistic concurrency checks.</purpose>
+      <scope>Per-path asyncio locks, filesystem-level locks, expected/current revision comparison, external sync recheck.</scope>
+      <depends>M-005 M-011 M-012</depends>
+      <target_path>src/memory_mcp/concurrency.py</target_path>
+      <test_path>tests/test_concurrency.py</test_path>
+      <public_interfaces>
+        <fn-acquire_path_lock id="M-007-FN-001" />
+        <fn-recheck_revision id="M-007-FN-002" />
+        <fn-compute_content_hash id="M-007-FN-003" />
+        <type-RevisionCheckResult id="M-007-TYPE-001" />
+      </public_interfaces>
+      <observability>Emit lock.acquired, lock.released and revision.rechecked.</observability>
+      <rationale>External sync can change files outside local process locks, so write safety requires both locking and content-hash revalidation.</rationale>
+    </Module>
+
+    <Module id="M-008" name="VaultMutationService" type="CORE_LOGIC" verification_ref="V-M-008">
+      <purpose>Executes approved create/append/edit/write operations and returns affected_paths without calling index refresh directly.</purpose>
+      <scope>Apply MutationPlan, invoke atomic writes, coordinate audit, return mutation results.</scope>
+      <depends>M-003 M-005 M-006 M-007 M-009 M-012</depends>
+      <target_path>src/memory_mcp/mutation_service.py</target_path>
+      <test_path>tests/test_mutation_service.py</test_path>
+      <public_interfaces>
+        <fn-create_note id="M-008-FN-001" />
+        <fn-append_note id="M-008-FN-002" />
+        <fn-edit_note id="M-008-FN-003" />
+        <fn-write_note id="M-008-FN-004" />
+        <type-MutationResult id="M-008-TYPE-001" />
+      </public_interfaces>
+      <observability>Emit mutation.started, mutation.affected_paths.returned and mutation.completed.</observability>
+      <rationale>Mutation is deliberately decoupled from index refresh to preserve the dependency DAG and make write failures easier to reason about.</rationale>
+    </Module>
+
+    <Module id="M-009" name="AuditLogService" type="CORE_LOGIC" verification_ref="V-M-009">
+      <purpose>Writes authoritative machine-readable audit events and updates LOG.md projection.</purpose>
+      <scope>Append audit event, write human projection, associate trace_id, avoid recursive audit loops.</scope>
+      <depends>M-005 M-007 M-011 M-012</depends>
+      <target_path>src/memory_mcp/audit_log.py</target_path>
+      <test_path>tests/test_audit_log.py</test_path>
+      <public_interfaces>
+        <fn-record_event id="M-009-FN-001" />
+        <fn-update_log_projection id="M-009-FN-002" />
+        <type-AuditEvent id="M-009-TYPE-001" />
+      </public_interfaces>
+      <observability>Emit audit.authoritative_event.appended and audit.log_projection.updated.</observability>
+      <rationale>Machine-readable audit supports verification and forensic reconstruction while LOG.md preserves human-readable Obsidian visibility.</rationale>
+    </Module>
+
+    <Module id="M-010" name="RetrievalService" type="CORE_LOGIC" verification_ref="V-M-010">
+      <purpose>Provides keyword, FTS, optional semantic, similar-notes, wiki-source retrieval and explainable ranking.</purpose>
+      <scope>Search query orchestration, FTS retrieval, optional vector retrieval, policy filtering, ranking explanation.</scope>
+      <depends>M-003 M-013 M-015 M-016 M-012</depends>
+      <target_path>src/memory_mcp/retrieval_service.py</target_path>
+      <test_path>tests/test_retrieval_service.py</test_path>
+      <public_interfaces>
+        <fn-search_notes id="M-010-FN-001" />
+        <fn-find_similar_notes id="M-010-FN-002" />
+        <fn-find_wiki_sources id="M-010-FN-003" />
+        <fn-explain_ranking id="M-010-FN-004" />
+      </public_interfaces>
+      <observability>Emit retrieval.query.completed and retrieval.denied_path.filtered.</observability>
+      <rationale>Retrieval must filter at response time because derivative indexes may temporarily contain stale entries.</rationale>
+    </Module>
+
+    <Module id="M-011" name="ConfigService" type="UTILITY" verification_ref="V-M-011">
+      <purpose>Loads server, Vault, auth, policy, index, audit and backup configuration.</purpose>
+      <scope>Parse configuration, provide typed settings, validate required settings, expose policy and backend choices.</scope>
+      <depends>none</depends>
+      <target_path>src/memory_mcp/config.py</target_path>
+      <test_path>tests/test_config.py</test_path>
+      <public_interfaces>
+        <fn-load_config id="M-011-FN-001" />
+        <fn-validate_config id="M-011-FN-002" />
+        <type-ServerConfig id="M-011-TYPE-001" />
+      </public_interfaces>
+      <observability>May expose sanitized config summary; must not log secrets.</observability>
+      <rationale>Configuration centralization prevents policy and backend drift between modules.</rationale>
+    </Module>
+
+    <Module id="M-012" name="ObservabilityService" type="UTILITY" verification_ref="V-M-012">
+      <purpose>Provides structured logs, request IDs, trace anchors and error taxonomy.</purpose>
+      <scope>Trace context, structured log helper, error codes, audit correlation IDs.</scope>
+      <depends>M-011</depends>
+      <target_path>src/memory_mcp/observability.py</target_path>
+      <test_path>tests/test_observability.py</test_path>
+      <public_interfaces>
+        <fn-new_trace_id id="M-012-FN-001" />
+        <fn-log_trace_anchor id="M-012-FN-002" />
+        <type-ErrorCode id="M-012-TYPE-001" />
+      </public_interfaces>
+      <observability>This module defines the observability surface for all other modules.</observability>
+      <rationale>Autonomous execution needs stable trace anchors to diagnose policy, mutation and index failures.</rationale>
+    </Module>
+
+    <Module id="M-013" name="IndexRepository" type="DATA_LAYER" verification_ref="V-M-013">
+      <purpose>Maintains SQLite metadata, FTS5, audit-index access and future vector tables derived from Vault files.</purpose>
+      <scope>SQLite schema, FTS operations, index state, WAL/busy_timeout initialization, derivative metadata persistence.</scope>
+      <depends>M-005 M-011 M-012</depends>
+      <target_path>src/memory_mcp/index_repo.py</target_path>
+      <test_path>tests/test_index_repo.py</test_path>
+      <public_interfaces>
+        <fn-initialize_schema id="M-013-FN-001" />
+        <fn-upsert_note_index id="M-013-FN-002" />
+        <fn-delete_note_index id="M-013-FN-003" />
+        <fn-search_fts id="M-013-FN-004" />
+      </public_interfaces>
+      <observability>Emit index.schema.ready and index.fts.query.completed.</observability>
+      <rationale>Keeping index persistence separate reinforces that the index is rebuildable and not the source of truth.</rationale>
+    </Module>
+
+    <Module id="M-014" name="IndexRefreshService" type="CORE_LOGIC" verification_ref="V-M-014">
+      <purpose>Rebuilds or incrementally updates the index from Vault content and affected_paths.</purpose>
+      <scope>refresh_paths, startup_reconcile, refresh_wiki_folder, single writer queue coordination, optional vector update.</scope>
+      <depends>M-003 M-005 M-013 M-015 M-016 M-012</depends>
+      <target_path>src/memory_mcp/index_refresh.py</target_path>
+      <test_path>tests/test_index_refresh.py</test_path>
+      <public_interfaces>
+        <fn-refresh_index id="M-014-FN-001" />
+        <fn-refresh_paths id="M-014-FN-002" />
+        <fn-refresh_wiki_folder id="M-014-FN-003" />
+        <fn-startup_reconcile id="M-014-FN-004" />
+      </public_interfaces>
+      <observability>Emit index.refresh.started and index.refresh.completed.</observability>
+      <rationale>Refresh is a supervised derivative update triggered outside mutation execution to prevent cycles and preserve write safety.</rationale>
+    </Module>
+
+    <Module id="M-015" name="MarkdownSemanticParser" type="UTILITY" verification_ref="V-M-015">
+      <purpose>Extracts frontmatter, tags, links, headings, sections and validates post-apply Markdown shape.</purpose>
+      <scope>Markdown parsing, section extraction, heading paths, link extraction, post-apply validation.</scope>
+      <depends>M-012</depends>
+      <target_path>src/memory_mcp/markdown_parser.py</target_path>
+      <test_path>tests/test_markdown_parser.py</test_path>
+      <public_interfaces>
+        <fn-parse_markdown id="M-015-FN-001" />
+        <fn-extract_sections id="M-015-FN-002" />
+        <fn-validate_markdown_shape id="M-015-FN-003" />
+      </public_interfaces>
+      <observability>Emit markdown.parse.completed and markdown.validation.failed when applicable.</observability>
+      <rationale>A reusable semantic parser keeps edit validation, indexing and wiki source extraction consistent.</rationale>
+    </Module>
+
+    <Module id="M-016" name="VectorSearchAdapter" type="INTEGRATION" verification_ref="V-M-016">
+      <purpose>Provides optional vector search via disabled/sqlite-vec/qdrant-optional implementations.</purpose>
+      <scope>Backend selection, vector upsert/query abstraction, graceful degradation to FTS.</scope>
+      <depends>M-011 M-012</depends>
+      <target_path>src/memory_mcp/vector_adapter.py</target_path>
+      <test_path>tests/test_vector_adapter.py</test_path>
+      <public_interfaces>
+        <fn-create_vector_adapter id="M-016-FN-001" />
+        <fn-upsert_vectors id="M-016-FN-002" />
+        <fn-query_vectors id="M-016-FN-003" />
+      </public_interfaces>
+      <observability>Emit vector.mode.selected and vector.degraded_to_fts.</observability>
+      <rationale>The boundary describes semantic retrieval capability instead of binding architecture to Qdrant prematurely.</rationale>
+    </Module>
+
+    <Module id="M-017" name="BackupService" type="INTEGRATION" verification_ref="V-M-017">
+      <purpose>Exposes manual Git backup/health integration without implementing rollback API in MVP.</purpose>
+      <scope>Backup health check, manual backup trigger, status reporting, no content mutation beyond Git operations.</scope>
+      <depends>M-005 M-011 M-012</depends>
+      <target_path>src/memory_mcp/backup_service.py</target_path>
+      <test_path>tests/test_backup_service.py</test_path>
+      <public_interfaces>
+        <fn-backup_vault id="M-017-FN-001" />
+        <fn-backup_health id="M-017-FN-002" />
+      </public_interfaces>
+      <observability>Emit backup.snapshot.completed and backup.health.checked.</observability>
+      <rationale>Manual Git backup provides recoverability without adding risky rollback API surface to MVP.</rationale>
+    </Module>
+
+    <Module id="M-018" name="WikiUpdateService" type="CORE_LOGIC" verification_ref="V-M-018">
+      <purpose>Finds wiki sources and generates propose-only diffs for 70_Wiki.</purpose>
+      <scope>Wiki source retrieval, proposed update generation, diff output, no autonomous write.</scope>
+      <depends>M-003 M-006 M-010 M-015 M-012</depends>
+      <target_path>src/memory_mcp/wiki_update_service.py</target_path>
+      <test_path>tests/test_wiki_update_service.py</test_path>
+      <public_interfaces>
+        <fn-find_wiki_sources id="M-018-FN-001" />
+        <fn-propose_wiki_update id="M-018-FN-002" />
+        <fn-generate_wiki_diff id="M-018-FN-003" />
+      </public_interfaces>
+      <observability>Emit wiki.diff.generated and wiki.sources.selected.</observability>
+      <rationale>Wiki pages are synthesized knowledge and should be reviewed as proposed diffs before mutation.</rationale>
+    </Module>
+
+    <Module id="M-019" name="DraftPromotionService" type="CORE_LOGIC" verification_ref="V-M-019">
+      <purpose>Controls single-note promote/move workflows from inbox or future drafts to approved destinations.</purpose>
+      <scope>Validate source/destination roots, dry-run, no-overwrite, single-file move, audit event, affected_paths result.</scope>
+      <depends>M-003 M-005 M-006 M-007 M-009 M-012</depends>
+      <target_path>src/memory_mcp/draft_promotion_service.py</target_path>
+      <test_path>tests/test_draft_promotion_service.py</test_path>
+      <public_interfaces>
+        <fn-move_note_once id="M-019-FN-001" />
+        <fn-promote_note id="M-019-FN-002" />
+      </public_interfaces>
+      <observability>Emit promotion.plan.created and promotion.completed.</observability>
+      <rationale>Promotion is a high-risk lifecycle transition and needs a narrower contract than unrestricted move/rename.</rationale>
+    </Module>
+  </ModuleContracts>
+
+  <DependencyDAG id="DAG-001" circular_dependencies="none_if_constraints_hold">
+    <edge id="DAG-E-001" from="M-011" to="M-002" />
+    <edge id="DAG-E-002" from="M-011" to="M-003" />
+    <edge id="DAG-E-003" from="M-011" to="M-005" />
+    <edge id="DAG-E-004" from="M-011" to="M-007" />
+    <edge id="DAG-E-005" from="M-011" to="M-009" />
+    <edge id="DAG-E-006" from="M-011" to="M-012" />
+    <edge id="DAG-E-007" from="M-011" to="M-013" />
+    <edge id="DAG-E-008" from="M-011" to="M-016" />
+    <edge id="DAG-E-009" from="M-011" to="M-017" />
+    <edge id="DAG-E-010" from="M-002" to="M-003" />
+    <edge id="DAG-E-011" from="M-003" to="M-004" />
+    <edge id="DAG-E-012" from="M-003" to="M-006" />
+    <edge id="DAG-E-013" from="M-003" to="M-008" />
+    <edge id="DAG-E-014" from="M-003" to="M-010" />
+    <edge id="DAG-E-015" from="M-003" to="M-014" />
+    <edge id="DAG-E-016" from="M-003" to="M-018" />
+    <edge id="DAG-E-017" from="M-003" to="M-019" />
+    <edge id="DAG-E-018" from="M-005" to="M-004" />
+    <edge id="DAG-E-019" from="M-005" to="M-006" />
+    <edge id="DAG-E-020" from="M-005" to="M-007" />
+    <edge id="DAG-E-021" from="M-005" to="M-008" />
+    <edge id="DAG-E-022" from="M-005" to="M-009" />
+    <edge id="DAG-E-023" from="M-005" to="M-013" />
+    <edge id="DAG-E-024" from="M-005" to="M-014" />
+    <edge id="DAG-E-025" from="M-005" to="M-017" />
+    <edge id="DAG-E-026" from="M-005" to="M-019" />
+    <edge id="DAG-E-027" from="M-007" to="M-006" />
+    <edge id="DAG-E-028" from="M-007" to="M-008" />
+    <edge id="DAG-E-029" from="M-007" to="M-009" />
+    <edge id="DAG-E-030" from="M-007" to="M-019" />
+    <edge id="DAG-E-031" from="M-015" to="M-006" />
+    <edge id="DAG-E-032" from="M-015" to="M-010" />
+    <edge id="DAG-E-033" from="M-015" to="M-014" />
+    <edge id="DAG-E-034" from="M-015" to="M-018" />
+    <edge id="DAG-E-035" from="M-013" to="M-010" />
+    <edge id="DAG-E-036" from="M-013" to="M-014" />
+    <edge id="DAG-E-037" from="M-016" to="M-010" />
+    <edge id="DAG-E-038" from="M-016" to="M-014" />
+    <edge id="DAG-E-039" from="M-006" to="M-008" />
+    <edge id="DAG-E-040" from="M-006" to="M-018" />
+    <edge id="DAG-E-041" from="M-006" to="M-019" />
+    <edge id="DAG-E-042" from="M-008" to="M-001" coupling="mutation_result_only" />
+    <edge id="DAG-E-043" from="M-010" to="M-001" />
+    <edge id="DAG-E-044" from="M-010" to="M-018" />
+    <edge id="DAG-E-045" from="M-014" to="M-001" coupling="entrypoint_or_background_worker" />
+    <edge id="DAG-E-046" from="M-017" to="M-001" />
+    <edge id="DAG-E-047" from="M-018" to="M-001" />
+    <edge id="DAG-E-048" from="M-019" to="M-001" />
+    <forbidden_edge id="DAG-FORBID-001" from="M-008" to="M-014" rationale="Would create mutation/index coupling and risk circular dependency." />
+  </DependencyDAG>
+
+  <DataFlows id="DATAFLOWS-001">
+    <DataFlow id="DF-001" name="SafeRead">
+      <sequence>Agent MCP Client -> M-001 -> M-002 -> M-003 -> M-004 -> M-005 -> return content + revision + metadata</sequence>
+      <rationale>Read path passes policy so denylisted content is never exposed.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-002" name="SafeMutation">
+      <sequence>Agent MCP Client -> M-001 -> M-002 -> M-003 -> M-006 -> M-007 -> M-008 -> M-009 -> return mutation result + affected_paths -> M-001/background worker -> M-014</sequence>
+      <rationale>Mutation planning, revision recheck, atomic write and audit are required before derivative index refresh.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-003" name="RetrievalSearch">
+      <sequence>Agent MCP Client -> M-001 -> M-002 -> M-003 -> M-010 -> M-013/M-016 -> M-003 result filter -> return snippets/sources/ranking explanation</sequence>
+      <rationale>Retrieval re-checks policy to avoid stale index leaks.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-004" name="IndexRefreshFromMutationResult">
+      <sequence>Mutation result -> affected_paths -> M-001/background worker -> M-014 -> M-003 -> M-005 -> M-015 -> M-013 -> optional M-016</sequence>
+      <rationale>Refresh is supervised and derivative.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-005" name="WikiProposeOnlyUpdate">
+      <sequence>Agent -> M-001 -> M-010.find_wiki_sources -> M-018 -> M-006 preview -> return proposal diff</sequence>
+      <rationale>Wiki automation proposes changes rather than mutating synthesized knowledge directly.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-006" name="DraftInboxPromotion">
+      <sequence>Trusted Agent -> M-001 -> M-002 -> M-003 -> M-019 -> M-007 -> M-005 -> M-009 -> return affected_paths</sequence>
+      <rationale>Promotion is constrained to single-note trusted move with dry-run, no-overwrite and audit.</rationale>
+    </DataFlow>
+  </DataFlows>
+
+  <ImplementationPhases id="PHASES-001">
+    <Phase id="PH-001" name="FoundationAndPolicy" status="complete" gate="PG-001" gate_passed="true">
+      <step id="STEP-001" module="M-011" status="complete" completed_at="2026-05-08">Implement ConfigService.</step>
+      <step id="STEP-002" module="M-012" status="complete" completed_at="2026-05-08">Implement ObservabilityService.</step>
+      <step id="STEP-003" module="M-002" status="complete" completed_at="2026-05-08">Implement AuthIdentityService.</step>
+      <step id="STEP-004" module="M-003" status="complete" completed_at="2026-05-08">Implement VaultPolicyGuard.</step>
+      <step id="STEP-005" module="M-005" status="complete" completed_at="2026-05-08">Implement VaultFilesystemRepository.</step>
+      <verification_refs>V-M-011 V-M-012 V-M-002 V-M-003 V-M-005</verification_refs>
+      <rationale>Safety, configuration, identity and path boundaries must exist before any MCP tool can safely expose Vault access.</rationale>
+    </Phase>
+    <Phase id="PH-002" name="ReadOnlyMCP">
+      <step id="STEP-006" module="M-001">Expose read-only MCP tools over Streamable HTTP.</step>
+      <step id="STEP-007" module="M-004">Implement VaultReadService.</step>
+      <verification_refs>V-M-001 V-M-004 DF-001</verification_refs>
+      <rationale>Read-only execution validates transport, identity, policy and path resolution before mutations are introduced.</rationale>
+    </Phase>
+    <Phase id="PH-003" name="SafeMutationPipeline">
+      <step id="STEP-008" module="M-007">Implement LockAndRevisionService.</step>
+      <step id="STEP-009" module="M-006">Implement ChangePlanner.</step>
+      <step id="STEP-010" module="M-009">Implement AuditLogService.</step>
+      <step id="STEP-011" module="M-008">Implement VaultMutationService.</step>
+      <verification_refs>V-M-007 V-M-006 V-M-009 V-M-008 DF-002</verification_refs>
+      <rationale>Writes are only safe after dry-run, constrained patch validation, hybrid locks, external sync revision recheck and audit exist.</rationale>
+    </Phase>
+    <Phase id="PH-004" name="SQLiteFTSRetrieval">
+      <step id="STEP-012" module="M-015">Implement MarkdownSemanticParser.</step>
+      <step id="STEP-013" module="M-013">Implement IndexRepository with SQLite FTS5 and WAL.</step>
+      <step id="STEP-014" module="M-014">Implement IndexRefreshService with affected_paths.</step>
+      <step id="STEP-015" module="M-010">Implement RetrievalService keyword/FTS.</step>
+      <verification_refs>V-M-015 V-M-013 V-M-014 V-M-010 DF-003 DF-004</verification_refs>
+      <rationale>Reliable MVP search should be local, rebuildable and policy-filtered before semantic retrieval is added.</rationale>
+    </Phase>
+    <Phase id="PH-005" name="PromotionBackupAndOps">
+      <step id="STEP-016" module="M-019">Implement DraftPromotionService.</step>
+      <step id="STEP-017" module="M-017">Implement BackupService manual Git backup integration.</step>
+      <step id="STEP-018" module="M-001">Expose health_check and admin tools.</step>
+      <verification_refs>V-M-019 V-M-017 V-M-001 DF-006</verification_refs>
+      <rationale>Promotion and backup are operational risk surfaces and must be verified before wiki and semantic expansion.</rationale>
+    </Phase>
+    <Phase id="PH-006" name="WikiProposeOnlyAutomation">
+      <step id="STEP-019" module="M-018">Implement WikiUpdateService propose-only diff generation.</step>
+      <step id="STEP-020" module="M-014">Support refresh_wiki_folder as index refresh, not autonomous wiki write.</step>
+      <verification_refs>V-M-018 V-M-014 DF-005</verification_refs>
+      <rationale>Wiki automation is content-risky and must remain propose-only.</rationale>
+    </Phase>
+    <Phase id="PH-007" name="OptionalSemanticRetrieval">
+      <step id="STEP-021" module="M-016">Implement VectorSearchAdapter with disabled/sqlite_vec/qdrant_optional modes.</step>
+      <step id="STEP-022" module="M-010">Extend RetrievalService for hybrid search and similar notes.</step>
+      <verification_refs>V-M-016 V-M-010</verification_refs>
+      <rationale>Semantic retrieval is useful after MVP but must degrade cleanly to FTS and not become a core reliability dependency.</rationale>
+    </Phase>
+  </ImplementationPhases>
+
+  <RiskRegister id="RISKS-001">
+    <Risk id="R-001" stop_condition="SC-003">
+      <description>Agent overwrites external Obsidian Sync change.</description>
+      <mitigation>sha256(content) expected_revision plus recheck before write.</mitigation>
+    </Risk>
+    <Risk id="R-002" stop_condition="SC-002">
+      <description>Mutation/index circular dependency.</description>
+      <mitigation>affected_paths result; M-001 or background worker calls M-014.</mitigation>
+    </Risk>
+    <Risk id="R-003" stop_condition="SC-004">
+      <description>Denylisted content leaked by retrieval.</description>
+      <mitigation>Policy at indexing and response time.</mitigation>
+    </Risk>
+    <Risk id="R-004" stop_condition="SC-005">
+      <description>Symlink escapes Vault sandbox.</description>
+      <mitigation>Deny path if any component is symlink.</mitigation>
+    </Risk>
+    <Risk id="R-005" stop_condition="SC-001 SC-003">
+      <description>write_note destroys file.</description>
+      <mitigation>Trusted profile, dry-run, diff, revision recheck and audit.</mitigation>
+    </Risk>
+    <Risk id="R-006" stop_condition="SC-006">
+      <description>70_Wiki corrupted by autonomous synthesis.</description>
+      <mitigation>Propose-only diff generation.</mitigation>
+    </Risk>
+    <Risk id="R-007" stop_condition="V-M-013">
+      <description>SQLite locked under concurrent index writes.</description>
+      <mitigation>WAL, busy_timeout and single writer queue.</mitigation>
+    </Risk>
+    <Risk id="R-008" stop_condition="V-M-009">
+      <description>Audit trail lost or corrupted.</description>
+      <mitigation>Authoritative SQLite/NDJSON audit and LOG.md projection.</mitigation>
+    </Risk>
+  </RiskRegister>
+</GRACEDevelopmentPlan>
