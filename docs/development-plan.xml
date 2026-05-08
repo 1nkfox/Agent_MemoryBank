@@ -435,9 +435,9 @@
       <verification_refs>V-M-019 V-M-017 V-M-001 DF-006</verification_refs>
       <rationale>Promotion and backup are operational risk surfaces and must be verified before wiki and semantic expansion.</rationale>
     </Phase>
-    <Phase id="PH-006" name="WikiProposeOnlyAutomation">
-      <step id="STEP-019" module="M-018">Implement WikiUpdateService propose-only diff generation.</step>
-      <step id="STEP-020" module="M-014">Support refresh_wiki_folder as index refresh, not autonomous wiki write.</step>
+    <Phase id="PH-006" name="WikiProposeOnlyAutomation" status="complete" gate="PG-006" gate_passed="true">
+      <step id="STEP-019" module="M-018" status="complete" completed_at="2026-05-08">Implement WikiUpdateService propose-only diff generation.</step>
+      <step id="STEP-020" module="M-014" status="complete" completed_at="2026-05-08">Support refresh_wiki_folder as index refresh, not autonomous wiki write.</step>
       <verification_refs>V-M-018 V-M-014 DF-005</verification_refs>
       <rationale>Wiki automation is content-risky and must remain propose-only.</rationale>
     </Phase>
