@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -270,6 +271,10 @@ def handle_tool_call(
     try:
         result_data = handler(identity, profile, params, config, trace_id)
         if inspect.isawaitable(result_data):
+            if not isinstance(result_data, Coroutine):
+                raise RuntimeError(
+                    f"Tool '{tool_name}' returned a non-coroutine awaitable"
+                )
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
