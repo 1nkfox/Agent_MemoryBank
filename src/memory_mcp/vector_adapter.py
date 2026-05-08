@@ -22,6 +22,8 @@ class VectorQueryResult:
 
 
 class VectorAdapter(Protocol):
+    mode: str
+
     def upsert_vectors(self, items: list[dict[str, Any]]) -> None:
         """Persist vector items for later semantic retrieval."""
 
@@ -110,7 +112,7 @@ def create_vector_adapter(mode: str | None = None, config: ServerConfig | None =
     requested_mode = _resolve_mode(mode, config)
 
     if requested_mode == "disabled":
-        adapter = NoopVectorAdapter(requested_mode=requested_mode)
+        adapter: VectorAdapter = NoopVectorAdapter(requested_mode=requested_mode)
         _emit_mode_selected(trace_id, requested_mode, adapter.mode)
         return adapter
 
