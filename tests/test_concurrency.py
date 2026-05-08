@@ -2,12 +2,10 @@
 
 import json
 import logging
-from pathlib import Path
 
 import pytest
 
 from memory_mcp.concurrency import (
-    RevisionCheckResult,
     acquire_path_lock,
     compute_content_hash,
     recheck_revision,
