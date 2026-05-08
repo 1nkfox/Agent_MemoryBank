@@ -420,11 +420,11 @@
       <verification_refs>V-M-007 V-M-006 V-M-009 V-M-008 DF-002</verification_refs>
       <rationale>Writes are only safe after dry-run, constrained patch validation, hybrid locks, external sync revision recheck and audit exist.</rationale>
     </Phase>
-    <Phase id="PH-004" name="SQLiteFTSRetrieval">
-      <step id="STEP-012" module="M-015">Implement MarkdownSemanticParser.</step>
-      <step id="STEP-013" module="M-013">Implement IndexRepository with SQLite FTS5 and WAL.</step>
-      <step id="STEP-014" module="M-014">Implement IndexRefreshService with affected_paths.</step>
-      <step id="STEP-015" module="M-010">Implement RetrievalService keyword/FTS.</step>
+    <Phase id="PH-004" name="SQLiteFTSRetrieval" status="complete" gate="PG-004" gate_passed="true">
+      <step id="STEP-012" module="M-015" status="complete" completed_at="2026-05-08">Implement MarkdownSemanticParser.</step>
+      <step id="STEP-013" module="M-013" status="complete" completed_at="2026-05-08">Implement IndexRepository with SQLite FTS5 and WAL.</step>
+      <step id="STEP-014" module="M-014" status="complete" completed_at="2026-05-08">Implement IndexRefreshService with affected_paths.</step>
+      <step id="STEP-015" module="M-010" status="complete" completed_at="2026-05-08">Implement RetrievalService keyword/FTS.</step>
       <verification_refs>V-M-015 V-M-013 V-M-014 V-M-010 DF-003 DF-004</verification_refs>
       <rationale>Reliable MVP search should be local, rebuildable and policy-filtered before semantic retrieval is added.</rationale>
     </Phase>
