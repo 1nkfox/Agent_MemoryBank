@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from memory_mcp.config import ServerConfig
@@ -137,6 +137,35 @@ def _walk_allowlist_markdown_paths(config: ServerConfig) -> list[str]:
     return sorted(set(result))
 
 
+def _walk_wiki_markdown_paths(config: ServerConfig) -> list[str]:
+    wiki_root = os.path.join(config.vault.root, "70_Wiki")
+    if not os.path.isdir(wiki_root):
+        return []
+
+    result: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(wiki_root):
+        dirnames[:] = [dirname for dirname in dirnames if not dirname.startswith(".")]
+        for filename in filenames:
+            if not filename.endswith(".md"):
+                continue
+            rel_path = os.path.relpath(
+                os.path.join(dirpath, filename),
+                config.vault.root,
+            ).replace("\\", "/")
+            result.append(rel_path)
+    return sorted(result)
+
+
+def _wiki_derivative_refresh_config(config: ServerConfig) -> ServerConfig:
+    policy = replace(
+        config.policy,
+        propose_only_roots=[
+            root for root in config.policy.propose_only_roots if root.rstrip("/") != "70_Wiki"
+        ],
+    )
+    return replace(config, policy=policy)
+
+
 def refresh_paths(profile: str, paths: list[str], config: ServerConfig) -> RefreshResult:
     trace_id = new_trace_id()
     _log_started(trace_id, "refresh_paths", profile, paths)
@@ -158,6 +187,20 @@ def refresh_paths(profile: str, paths: list[str], config: ServerConfig) -> Refre
 
     result = RefreshResult(success=True, updated_paths=updated_paths, deleted_paths=deleted_paths)
     _log_completed(trace_id, "refresh_paths", profile, result)
+    return result
+
+
+def refresh_wiki_folder(profile: str, config: ServerConfig) -> RefreshResult:
+    trace_id = new_trace_id()
+    _log_started(trace_id, "refresh_wiki_folder", profile)
+
+    result = refresh_paths(
+        profile,
+        _walk_wiki_markdown_paths(config),
+        _wiki_derivative_refresh_config(config),
+    )
+
+    _log_completed(trace_id, "refresh_wiki_folder", profile, result)
     return result
 
 
