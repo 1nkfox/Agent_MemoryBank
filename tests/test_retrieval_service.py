@@ -8,7 +8,8 @@ from pathlib import Path
 
 from memory_mcp.config import load_config
 from memory_mcp.index_repo import initialize_schema, search_fts, upsert_note_index
-from memory_mcp.retrieval_service import explain_ranking, search_notes
+from memory_mcp.retrieval_service import explain_ranking, find_similar_notes, search_notes
+from memory_mcp.vector_adapter import VectorQueryResult
 
 
 def _parsed_logs(caplog) -> list[dict]:
@@ -102,6 +103,78 @@ def test_fts_works_when_vector_backend_disabled(tmp_path, sample_config_dict):
 
     assert [result.path for result in results] == ["memory/apples.md"]
     assert config.vector.backend == "disabled"
+
+
+def test_disabled_vector_mode_search_still_returns_fts_results(tmp_path, sample_config_dict):
+    config = _make_config(tmp_path, sample_config_dict, vector_backend="disabled")
+    _seed_index(config.index.db_path)
+
+    results = search_notes("readonly_agent", "banana", config)
+
+    assert [result.path for result in results] == ["memory/bananas.md"]
+    assert results[0].explanation["source"] == "fts"
+
+
+def test_find_similar_notes_returns_empty_in_disabled_mode(tmp_path, sample_config_dict):
+    config = _make_config(tmp_path, sample_config_dict, vector_backend="disabled")
+    _seed_index(config.index.db_path)
+
+    results = find_similar_notes("readonly_agent", "memory/apples.md", config)
+
+    assert results == []
+
+
+def test_find_similar_notes_uses_vector_results_when_available(monkeypatch, tmp_path, sample_config_dict):
+    config = _make_config(tmp_path, sample_config_dict, vector_backend="sqlite_vec")
+    _seed_index(config.index.db_path)
+
+    monkeypatch.setattr("memory_mcp.retrieval_service.create_vector_adapter", lambda config: object())
+    monkeypatch.setattr(
+        "memory_mcp.retrieval_service.query_vectors",
+        lambda adapter, query, limit: [
+            VectorQueryResult(
+                path="memory/apples.md",
+                score=0.92,
+                metadata={"snippet": "Similar apple note", "revision": "rev-apple"},
+            )
+        ],
+    )
+
+    results = find_similar_notes("readonly_agent", "memory/bananas.md", config)
+
+    assert len(results) == 1
+    assert results[0].path == "memory/apples.md"
+    assert results[0].snippet == "Similar apple note"
+    assert results[0].revision == "rev-apple"
+    assert explain_ranking(results[0])["source_scores"] == {"vector": 0.92}
+
+
+def test_vector_failure_degrades_to_fts(monkeypatch, tmp_path, sample_config_dict):
+    config = _make_config(tmp_path, sample_config_dict, vector_backend="sqlite_vec")
+    _seed_index(config.index.db_path)
+
+    def raise_vector_error(config):
+        raise RuntimeError("vector unavailable")
+
+    monkeypatch.setattr("memory_mcp.retrieval_service.create_vector_adapter", raise_vector_error)
+
+    results = search_notes("readonly_agent", "apple", config)
+
+    assert [result.path for result in results] == ["memory/apples.md"]
+    assert results[0].explanation["source"] == "fts"
+
+
+def test_vector_empty_results_degrade_to_fts(monkeypatch, tmp_path, sample_config_dict):
+    config = _make_config(tmp_path, sample_config_dict, vector_backend="sqlite_vec")
+    _seed_index(config.index.db_path)
+
+    monkeypatch.setattr("memory_mcp.retrieval_service.create_vector_adapter", lambda config: object())
+    monkeypatch.setattr("memory_mcp.retrieval_service.query_vectors", lambda adapter, query, limit: [])
+
+    results = search_notes("readonly_agent", "apple", config)
+
+    assert [result.path for result in results] == ["memory/apples.md"]
+    assert results[0].explanation["source"] == "fts"
 
 
 def test_search_without_policy_filter_fails(tmp_path, sample_config_dict):
