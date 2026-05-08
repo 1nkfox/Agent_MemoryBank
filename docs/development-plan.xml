@@ -412,11 +412,11 @@
       <verification_refs>V-M-001 V-M-004 DF-001</verification_refs>
       <rationale>Read-only execution validates transport, identity, policy and path resolution before mutations are introduced.</rationale>
     </Phase>
-    <Phase id="PH-003" name="SafeMutationPipeline">
-      <step id="STEP-008" module="M-007">Implement LockAndRevisionService.</step>
-      <step id="STEP-009" module="M-006">Implement ChangePlanner.</step>
-      <step id="STEP-010" module="M-009">Implement AuditLogService.</step>
-      <step id="STEP-011" module="M-008">Implement VaultMutationService.</step>
+    <Phase id="PH-003" name="SafeMutationPipeline" status="complete" gate="PG-003" gate_passed="true">
+      <step id="STEP-008" module="M-007" status="complete" completed_at="2026-05-08">Implement LockAndRevisionService.</step>
+      <step id="STEP-009" module="M-006" status="complete" completed_at="2026-05-08">Implement ChangePlanner.</step>
+      <step id="STEP-010" module="M-009" status="complete" completed_at="2026-05-08">Implement AuditLogService.</step>
+      <step id="STEP-011" module="M-008" status="complete" completed_at="2026-05-08">Implement VaultMutationService.</step>
       <verification_refs>V-M-007 V-M-006 V-M-009 V-M-008 DF-002</verification_refs>
       <rationale>Writes are only safe after dry-run, constrained patch validation, hybrid locks, external sync revision recheck and audit exist.</rationale>
     </Phase>
