@@ -1,0 +1,323 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GRACEKnowledgeGraph id="KG-ROOT-001" project="ObsidianMemoryMCP" status="approved" version="1.2">
+  <Metadata id="KG-META-001">
+    <title>Knowledge Graph for Obsidian Memory MCP Server</title>
+    <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
+    <approval>Architecture approved by user; graph is authoritative for module navigation.</approval>
+  </Metadata>
+
+  <Concepts id="KG-CONCEPTS-001">
+    <Concept id="C-001" name="VaultIsTruth">Markdown files in Obsidian Vault are the primary durable knowledge source.</Concept>
+    <Concept id="C-002" name="IndexIsDerivative">SQLite FTS, vector tables and projections can be rebuilt from Vault content.</Concept>
+    <Concept id="C-003" name="RevisionIsContentHash">revision equals sha256(content), not mtime or size.</Concept>
+    <Concept id="C-004" name="WritesArePlanned">Mutations require policy, plan, dry-run, revision recheck and audit.</Concept>
+    <Concept id="C-005" name="WikiIsProposeOnly">70_Wiki receives proposals and diffs, not autonomous writes.</Concept>
+    <Concept id="C-006" name="AgentsNeverDelete">Delete operations are outside MVP and denied by policy.</Concept>
+  </Concepts>
+
+  <Modules id="KG-MODULES-001">
+    <M-001 NAME="MCPServerEntrypoint" TYPE="ENTRY_POINT" verification-ref="V-M-001">
+      <Purpose>Exposes 12 MCP tools over Streamable HTTP, coordinates auth, policy, mutation, retrieval, index-refresh orchestration, and health checks.</Purpose>
+      <TargetPath>src/memory_mcp/server.py</TargetPath>
+      <PublicInterface>
+        <fn-read_note id="KG-M-001-FN-001" flow-ref="DF-001" />
+        <fn-search_notes id="KG-M-001-FN-002" flow-ref="DF-003" />
+        <fn-create_note id="KG-M-001-FN-003" flow-ref="DF-002" />
+        <fn-append_note id="KG-M-001-FN-004" flow-ref="DF-002" />
+        <fn-edit_note id="KG-M-001-FN-005" flow-ref="DF-002" />
+        <fn-write_note id="KG-M-001-FN-006" flow-ref="DF-002" />
+        <fn-promote_note id="KG-M-001-FN-007" flow-ref="DF-006" />
+        <fn-propose_wiki_update id="KG-M-001-FN-008" flow-ref="DF-005" />
+        <fn-refresh_paths id="KG-M-001-FN-009" flow-ref="DF-004" />
+        <fn-health_check id="KG-M-001-FN-010" />
+        <fn-backup_vault id="KG-M-001-FN-011" />
+        <fn-backup_health id="KG-M-001-FN-012" />
+        <fn-register_tool id="KG-M-001-FN-013" />
+        <fn-handle_tool_call_async id="KG-M-001-FN-014" />
+        <fn-handle_tool_call id="KG-M-001-FN-015" />
+        <fn-main id="KG-M-001-FN-016" />
+      </PublicInterface>
+      <Contracts>All 12 MCP tools wired. Mutation tools return affected_paths and trigger M-014 index refresh (not M-008). Wiki is propose-only. Must invoke auth+policy before service operations. Transports to M-020.</Contracts>
+    </M-001>
+
+    <M-002 NAME="AuthIdentityService" TYPE="CORE_LOGIC" verification-ref="V-M-002">
+      <Purpose>Resolves agent identity, API key, role and policy profile.</Purpose>
+      <TargetPath>src/memory_mcp/auth.py</TargetPath>
+      <PublicInterface>
+        <fn-resolve_identity id="KG-M-002-FN-001" />
+        <type-AgentIdentity id="KG-M-002-TYPE-001" />
+        <type-PolicyProfile id="KG-M-002-TYPE-002" />
+      </PublicInterface>
+      <Contracts>Must reject invalid keys before any Vault access and must never log secrets.</Contracts>
+    </M-002>
+
+    <M-003 NAME="VaultPolicyGuard" TYPE="CORE_LOGIC" verification-ref="V-M-003">
+      <Purpose>Enforces allowlist, denylist, no-delete, no-bulk-move, dry-run, propose-only and symlink-deny policies.</Purpose>
+      <TargetPath>src/memory_mcp/policy.py</TargetPath>
+      <PublicInterface>
+        <fn-authorize_operation id="KG-M-003-FN-001" />
+        <fn-check_path_policy id="KG-M-003-FN-002" />
+        <fn-filter_search_results id="KG-M-003-FN-003" />
+        <type-PolicyDecision id="KG-M-003-TYPE-001" />
+      </PublicInterface>
+      <Contracts>Must fail closed on denylist, delete, bulk move, missing dry-run, autonomous 70_Wiki write and symlink acceptance.</Contracts>
+    </M-003>
+
+    <M-004 NAME="VaultReadService" TYPE="CORE_LOGIC" verification-ref="V-M-004">
+      <Purpose>Provides safe read/list/exists/metadata operations over allowed Vault paths.</Purpose>
+      <TargetPath>src/memory_mcp/read_service.py</TargetPath>
+      <PublicInterface>
+        <fn-read_note id="KG-M-004-FN-001" />
+        <fn-check_file_exists id="KG-M-004-FN-002" />
+        <fn-list_allowed_paths id="KG-M-004-FN-003" />
+        <fn-get_note_metadata id="KG-M-004-FN-004" />
+      </PublicInterface>
+      <Contracts>Must return sha256(content) revision with content and must never expose denied paths.</Contracts>
+    </M-004>
+
+    <M-005 NAME="VaultFilesystemRepository" TYPE="DATA_LAYER" verification-ref="V-M-005">
+      <Purpose>Performs normalized path resolution, symlink denial, file reads, metadata inspection and atomic writes.</Purpose>
+      <TargetPath>src/memory_mcp/vault_fs.py</TargetPath>
+      <PublicInterface>
+        <fn-resolve_vault_path id="KG-M-005-FN-001" />
+        <fn-read_file id="KG-M-005-FN-002" />
+        <fn-write_file_atomic id="KG-M-005-FN-003" />
+        <fn-move_file_atomic id="KG-M-005-FN-004" />
+        <fn-compute_revision id="KG-M-005-FN-005" />
+      </PublicInterface>
+      <Contracts>Must deny traversal and any symlink path or parent component; all resolved paths must remain under Vault root.</Contracts>
+    </M-005>
+
+    <M-006 NAME="ChangePlanner" TYPE="CORE_LOGIC" verification-ref="V-M-006">
+      <Purpose>Builds dry-run diffs, validates constrained patches and creates executable mutation plans.</Purpose>
+      <TargetPath>src/memory_mcp/change_planner.py</TargetPath>
+      <PublicInterface>
+        <fn-prepare_change id="KG-M-006-FN-001" />
+        <fn-preview_diff id="KG-M-006-FN-002" />
+        <fn-validate_patch id="KG-M-006-FN-003" />
+        <type-MutationPlan id="KG-M-006-TYPE-001" />
+      </PublicInterface>
+      <Contracts>Allowed patch operations are append_under_heading, replace_section, replace_exact_text, replace_exact_block and insert_after_heading.</Contracts>
+    </M-006>
+
+    <M-007 NAME="LockAndRevisionService" TYPE="CORE_LOGIC" verification-ref="V-M-007">
+      <Purpose>Provides hybrid locks and sha256(content) optimistic concurrency checks.</Purpose>
+      <TargetPath>src/memory_mcp/concurrency.py</TargetPath>
+      <PublicInterface>
+        <fn-acquire_path_lock id="KG-M-007-FN-001" />
+        <fn-recheck_revision id="KG-M-007-FN-002" />
+        <fn-compute_content_hash id="KG-M-007-FN-003" />
+        <type-RevisionCheckResult id="KG-M-007-TYPE-001" />
+      </PublicInterface>
+      <Contracts>Must recompute current revision immediately before write and reject mismatch as conflict.</Contracts>
+    </M-007>
+
+    <M-008 NAME="VaultMutationService" TYPE="CORE_LOGIC" verification-ref="V-M-008">
+      <Purpose>Executes approved create/append/edit/write operations and returns affected_paths without calling index refresh directly.</Purpose>
+      <TargetPath>src/memory_mcp/mutation_service.py</TargetPath>
+      <PublicInterface>
+        <fn-create_note id="KG-M-008-FN-001" />
+        <fn-append_note id="KG-M-008-FN-002" />
+        <fn-edit_note id="KG-M-008-FN-003" />
+        <fn-write_note id="KG-M-008-FN-004" />
+        <type-MutationResult id="KG-M-008-TYPE-001" />
+      </PublicInterface>
+      <Contracts>Must return affected_paths and audit_event_id; must not depend on or directly call M-014.</Contracts>
+    </M-008>
+
+    <M-009 NAME="AuditLogService" TYPE="CORE_LOGIC" verification-ref="V-M-009">
+      <Purpose>Writes authoritative machine-readable audit events and updates LOG.md projection.</Purpose>
+      <TargetPath>src/memory_mcp/audit_log.py</TargetPath>
+      <PublicInterface>
+        <fn-record_event id="KG-M-009-FN-001" />
+        <fn-update_log_projection id="KG-M-009-FN-002" />
+        <type-AuditEvent id="KG-M-009-TYPE-001" />
+      </PublicInterface>
+      <Contracts>Audit event must include event_id, timestamp, agent_id, operation, path, revisions, dry_run, profile, result, affected_paths and trace_id.</Contracts>
+    </M-009>
+
+    <M-010 NAME="RetrievalService" TYPE="CORE_LOGIC" verification-ref="V-M-010">
+      <Purpose>Provides keyword, FTS, optional semantic, similar-notes, wiki-source retrieval and explainable ranking.</Purpose>
+      <TargetPath>src/memory_mcp/retrieval_service.py</TargetPath>
+      <PublicInterface>
+        <fn-search_notes id="KG-M-010-FN-001" />
+        <fn-find_similar_notes id="KG-M-010-FN-002" />
+        <fn-find_wiki_sources id="KG-M-010-FN-003" />
+        <fn-explain_ranking id="KG-M-010-FN-004" />
+      </PublicInterface>
+      <Contracts>Must filter denied paths after querying derivative indexes and must degrade to FTS when vector mode is disabled.</Contracts>
+    </M-010>
+
+    <M-011 NAME="ConfigService" TYPE="UTILITY" verification-ref="V-M-011">
+      <Purpose>Loads server, Vault, auth, policy, index, audit and backup configuration.</Purpose>
+      <TargetPath>src/memory_mcp/config.py</TargetPath>
+      <PublicInterface>
+        <fn-load_config id="KG-M-011-FN-001" />
+        <fn-validate_config id="KG-M-011-FN-002" />
+        <type-ServerConfig id="KG-M-011-TYPE-001" />
+      </PublicInterface>
+      <Contracts>Unsafe or incomplete config must fail closed; secrets must not be logged. API keys may be loaded from env (api_keys_from_env) with JSON-safe redaction.</Contracts>
+    </M-011>
+
+    <M-012 NAME="ObservabilityService" TYPE="UTILITY" verification-ref="V-M-012">
+      <Purpose>Provides structured logs, request IDs, trace anchors and error taxonomy.</Purpose>
+      <TargetPath>src/memory_mcp/observability.py</TargetPath>
+      <PublicInterface>
+        <fn-new_trace_id id="KG-M-012-FN-001" />
+        <fn-log_trace_anchor id="KG-M-012-FN-002" />
+        <type-ErrorCode id="KG-M-012-TYPE-001" />
+      </PublicInterface>
+      <Contracts>Critical operations must emit trace anchors with trace_id and safe structured fields.</Contracts>
+    </M-012>
+
+    <M-013 NAME="IndexRepository" TYPE="DATA_LAYER" verification-ref="V-M-013">
+      <Purpose>Maintains SQLite metadata, FTS5, audit-index access and future vector tables derived from Vault files.</Purpose>
+      <TargetPath>src/memory_mcp/index_repo.py</TargetPath>
+      <PublicInterface>
+        <fn-initialize_schema id="KG-M-013-FN-001" />
+        <fn-upsert_note_index id="KG-M-013-FN-002" />
+        <fn-delete_note_index id="KG-M-013-FN-003" />
+        <fn-search_fts id="KG-M-013-FN-004" />
+      </PublicInterface>
+      <Contracts>Must initialize SQLite WAL, busy_timeout, FTS5 schema and revision-aware index_state.</Contracts>
+    </M-013>
+
+    <M-014 NAME="IndexRefreshService" TYPE="CORE_LOGIC" verification-ref="V-M-014">
+      <Purpose>Rebuilds or incrementally updates the index from Vault content and affected_paths.</Purpose>
+      <TargetPath>src/memory_mcp/index_refresh.py</TargetPath>
+      <PublicInterface>
+        <fn-refresh_index id="KG-M-014-FN-001" />
+        <fn-refresh_paths id="KG-M-014-FN-002" />
+        <fn-refresh_wiki_folder id="KG-M-014-FN-003" />
+        <fn-startup_reconcile id="KG-M-014-FN-004" />
+      </PublicInterface>
+      <Contracts>Must treat Vault as source of truth and must be invoked by M-001 or background worker, not M-008.</Contracts>
+    </M-014>
+
+    <M-015 NAME="MarkdownSemanticParser" TYPE="UTILITY" verification-ref="V-M-015">
+      <Purpose>Extracts frontmatter, tags, links, headings, sections and validates post-apply Markdown shape.</Purpose>
+      <TargetPath>src/memory_mcp/markdown_parser.py</TargetPath>
+      <PublicInterface>
+        <fn-parse_markdown id="KG-M-015-FN-001" />
+        <fn-extract_sections id="KG-M-015-FN-002" />
+        <fn-validate_markdown_shape id="KG-M-015-FN-003" />
+      </PublicInterface>
+      <Contracts>Parser output must be stable for indexing, patch validation and wiki source extraction.</Contracts>
+    </M-015>
+
+    <M-016 NAME="VectorSearchAdapter" TYPE="INTEGRATION" verification-ref="V-M-016">
+      <Purpose>Provides optional vector search via disabled/sqlite-vec/qdrant-optional implementations.</Purpose>
+      <TargetPath>src/memory_mcp/vector_adapter.py</TargetPath>
+      <PublicInterface>
+        <fn-create_vector_adapter id="KG-M-016-FN-001" />
+        <fn-upsert_vectors id="KG-M-016-FN-002" />
+        <fn-query_vectors id="KG-M-016-FN-003" />
+      </PublicInterface>
+      <Contracts>Disabled mode must require no external dependency and vector failures must degrade to FTS.</Contracts>
+    </M-016>
+
+    <M-017 NAME="BackupService" TYPE="INTEGRATION" verification-ref="V-M-017">
+      <Purpose>Exposes manual Git backup/health integration without implementing rollback API in MVP.</Purpose>
+      <TargetPath>src/memory_mcp/backup_service.py</TargetPath>
+      <PublicInterface>
+        <fn-backup_vault id="KG-M-017-FN-001" />
+        <fn-backup_health id="KG-M-017-FN-002" />
+      </PublicInterface>
+      <Contracts>Must not implement restore_note_revision or mutate Vault content as rollback in MVP.</Contracts>
+    </M-017>
+
+    <M-018 NAME="WikiUpdateService" TYPE="CORE_LOGIC" verification-ref="V-M-018">
+      <Purpose>Finds wiki sources and generates propose-only diffs for 70_Wiki.</Purpose>
+      <TargetPath>src/memory_mcp/wiki_update_service.py</TargetPath>
+      <PublicInterface>
+        <fn-find_wiki_sources id="KG-M-018-FN-001" />
+        <fn-propose_wiki_update id="KG-M-018-FN-002" />
+        <fn-generate_wiki_diff id="KG-M-018-FN-003" />
+      </PublicInterface>
+      <Contracts>Must never write directly to 70_Wiki; output is source-linked diff proposal.</Contracts>
+    </M-018>
+
+    <M-019 NAME="DraftPromotionService" TYPE="CORE_LOGIC" verification-ref="V-M-019">
+      <Purpose>Controls single-note promote/move workflows from inbox or future drafts to approved destinations.</Purpose>
+      <TargetPath>src/memory_mcp/draft_promotion_service.py</TargetPath>
+      <PublicInterface>
+        <fn-move_note_once id="KG-M-019-FN-001" />
+        <fn-promote_note id="KG-M-019-FN-002" />
+      </PublicInterface>
+      <Contracts>Must be single-file, trusted-only, dry-run required, no overwrite, no denylisted folder.</Contracts>
+    </M-019>
+
+    <M-020 NAME="MCPTransport" TYPE="ENTRY_POINT" verification-ref="V-M-020">
+      <Purpose>Provides aiohttp-based Streamable HTTP MCP transport with JSON-RPC 2.0 handling, Bearer token auth, and MCP method routing (initialize, tools/list, tools/call, ping).</Purpose>
+      <TargetPath>src/memory_mcp/transport.py</TargetPath>
+      <PublicInterface>
+        <fn-run_server id="KG-M-020-FN-001" />
+        <fn-create_app id="KG-M-020-FN-002" />
+        <fn-_message_handler id="KG-M-020-FN-003" />
+        <fn-_health_handler id="KG-M-020-FN-004" />
+        <fn-_handle_mcp_request id="KG-M-020-FN-005" />
+      </PublicInterface>
+      <Contracts>Must accept JSON-RPC 2.0 over POST /message; Bearer token from Authorization header; MCP version 2024-11-05. GET /health returns server health non-JSON-RPC.</Contracts>
+    </M-020>
+  </Modules>
+
+  <CrossLinks id="KG-CROSSLINKS-001">
+    <CrossLink id="XL-001" from="M-001" to="M-002" relation="uses" bidirectional="true" />
+    <CrossLink id="XL-002" from="M-001" to="M-003" relation="uses" bidirectional="true" />
+    <CrossLink id="XL-003" from="M-001" to="M-004" relation="routes_read_tools_to" bidirectional="true" />
+    <CrossLink id="XL-007" from="M-001" to="M-017" relation="routes_backup_tools_to" bidirectional="true" />
+    <CrossLink id="XL-009" from="M-001" to="M-019" relation="routes_promotion_tools_to" bidirectional="true" />
+    <CrossLink id="XL-011" from="M-003" to="M-004" relation="authorizes_read" bidirectional="true" />
+    <CrossLink id="XL-012" from="M-003" to="M-006" relation="authorizes_change_planning" bidirectional="true" />
+    <CrossLink id="XL-013" from="M-003" to="M-008" relation="authorizes_mutation" bidirectional="true" />
+    <CrossLink id="XL-014" from="M-003" to="M-010" relation="filters_retrieval" bidirectional="true" />
+    <CrossLink id="XL-015" from="M-003" to="M-014" relation="guards_index_refresh_paths" bidirectional="true" />
+    <CrossLink id="XL-016" from="M-003" to="M-018" relation="enforces_wiki_propose_only" bidirectional="true" />
+    <CrossLink id="XL-017" from="M-003" to="M-019" relation="authorizes_promotion" bidirectional="true" />
+    <CrossLink id="XL-018" from="M-005" to="M-004" relation="provides_filesystem_reads" bidirectional="true" />
+    <CrossLink id="XL-019" from="M-005" to="M-008" relation="provides_atomic_writes" bidirectional="true" />
+    <CrossLink id="XL-021" from="M-006" to="M-008" relation="provides_mutation_plan" bidirectional="true" />
+    <CrossLink id="XL-024" from="M-007" to="M-008" relation="protects_mutation_revision" bidirectional="true" />
+    <CrossLink id="XL-025" from="M-007" to="M-009" relation="protects_log_projection_write" bidirectional="true" />
+    <CrossLink id="XL-026" from="M-008" to="M-009" relation="records_mutation_audit" bidirectional="true" />
+    <CrossLink id="XL-027" from="M-008" to="M-014" relation="forbidden_direct_call" bidirectional="false" forbidden="true" />
+    <CrossLink id="XL-028" from="M-010" to="M-013" relation="queries_fts_index" bidirectional="true" />
+    <CrossLink id="XL-029" from="M-010" to="M-016" relation="queries_optional_vectors" bidirectional="true" />
+    <CrossLink id="XL-030" from="M-010" to="M-018" relation="supplies_wiki_sources" bidirectional="true" />
+    <CrossLink id="XL-031" from="M-014" to="M-013" relation="updates_index_repository" bidirectional="true" />
+    <CrossLink id="XL-032" from="M-014" to="M-015" relation="uses_markdown_parse_for_refresh" bidirectional="true" />
+    <CrossLink id="XL-033" from="M-015" to="M-006" relation="validates_patch_markdown" bidirectional="true" />
+    <CrossLink id="XL-036" from="M-011" to="M-016" relation="selects_vector_mode" bidirectional="true" />
+    <CrossLink id="XL-038" from="M-019" to="M-009" relation="records_promotion_audit" bidirectional="true" />
+    <CrossLink id="XL-039" from="M-001" to="M-008" relation="routes_mutation_tools_to" bidirectional="true" />
+    <CrossLink id="XL-040" from="M-001" to="M-010" relation="routes_retrieval_tools_to" bidirectional="true" />
+    <CrossLink id="XL-041" from="M-001" to="M-014" relation="orchestrates_index_refresh_after_mutation" bidirectional="true" />
+    <CrossLink id="XL-042" from="M-001" to="M-018" relation="routes_wiki_proposal_to" bidirectional="true" />
+    <CrossLink id="XL-043" from="M-001" to="M-020" relation="delegates_http_transport_to" bidirectional="true" />
+    <CrossLink id="XL-044" from="M-020" to="M-001" relation="invokes_tools_via" bidirectional="true" />
+  </CrossLinks>
+
+  <DataFlowLinks id="KG-FLOW-LINKS-001">
+    <DataFlow id="DF-001" name="SafeRead" modules="M-001 M-002 M-003 M-004 M-005" verification_ref="VF-DF-001" />
+    <DataFlow id="DF-002" name="SafeMutation" modules="M-001 M-002 M-003 M-006 M-007 M-008 M-009 M-014" verification_ref="VF-DF-002" />
+    <DataFlow id="DF-003" name="RetrievalSearch" modules="M-001 M-002 M-003 M-010 M-013 M-016" verification_ref="VF-DF-003" />
+    <DataFlow id="DF-004" name="IndexRefreshFromMutationResult" modules="M-001 M-014 M-003 M-005 M-015 M-013 M-016" verification_ref="VF-DF-004" />
+    <DataFlow id="DF-005" name="WikiProposeOnlyUpdate" modules="M-001 M-010 M-018 M-006" verification_ref="VF-DF-005" />
+    <DataFlow id="DF-006" name="DraftInboxPromotion" modules="M-001 M-002 M-003 M-019 M-007 M-005 M-009" verification_ref="VF-DF-006" />
+  </DataFlowLinks>
+
+  <PolicyLinks id="KG-POLICY-LINKS-001">
+    <PolicyLink id="KG-POL-001" policy_ref="POL-001" enforced_by="M-003" used_by="M-001 M-004 M-006 M-008 M-010 M-014 M-018 M-019" />
+    <PolicyLink id="KG-POL-002" policy_ref="PP-001" enforced_by="M-006" used_by="M-008 M-018" />
+    <PolicyLink id="KG-POL-003" concept_ref="C-003" enforced_by="M-005 M-007" used_by="M-004 M-006 M-008 M-013 M-014" />
+    <PolicyLink id="KG-POL-004" concept_ref="C-005" enforced_by="M-003 M-018" used_by="M-001" />
+    <PolicyLink id="KG-POL-005" concept_ref="C-006" enforced_by="M-003" used_by="M-001 M-008 M-019" />
+  </PolicyLinks>
+
+  <GraphIntegrity id="KG-INTEGRITY-001">
+    <constraint id="KG-CONS-001">Every M-xxx node has a verification-ref V-M-xxx.</constraint>
+    <constraint id="KG-CONS-002">Every public interface annotation is public contract only; private helpers are intentionally excluded.</constraint>
+    <constraint id="KG-CONS-003">Forbidden direct dependency M-008 -> M-014 must remain absent in implementation.</constraint>
+    <constraint id="KG-CONS-004">CrossLinks are navigational and do not override the dependency DAG in development-plan.xml.</constraint>
+  </GraphIntegrity>
+</GRACEKnowledgeGraph>

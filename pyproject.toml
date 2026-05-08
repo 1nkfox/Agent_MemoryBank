@@ -7,6 +7,12 @@ name = "memory-mcp"
 version = "0.1.0"
 description = "Obsidian Memory MCP Server"
 requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9",
+]
+
+[project.scripts]
+memory-mcp = "memory_mcp.server:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "mypy", "ruff"]

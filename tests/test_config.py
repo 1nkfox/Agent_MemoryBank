@@ -144,3 +144,88 @@ def test_config_with_invalid_backend_fails(sample_config_dict, caplog, trace_ass
 
     invalid_entry = next(e for e in entries if e.get("event") == "config.invalid")
     assert invalid_entry["error_code"] == "CONFIG_INVALID_VECTOR_BACKEND"
+
+
+# --- Scenario 6: Env-based API keys ---
+
+_MEMORY_MCP_API_KEYS_ENV = "MEMORY_MCP_TEST_API_KEYS"
+
+
+def test_api_keys_from_env_loads_keys(sample_config_dict, monkeypatch):
+    env_keys = '{"env-key-admin": "admin", "env-key-readonly": "readonly_agent"}'
+    monkeypatch.setenv(_MEMORY_MCP_API_KEYS_ENV, env_keys)
+
+    cfg = dict(sample_config_dict)
+    del cfg["auth"]["api_keys"]
+    cfg["auth"]["api_keys_from_env"] = _MEMORY_MCP_API_KEYS_ENV
+
+    config = load_config(cfg)
+    assert "env-key-admin" in config.auth.api_keys
+    assert config.auth.api_keys["env-key-admin"] == "admin"
+    assert "env-key-readonly" in config.auth.api_keys
+
+
+def test_api_keys_from_env_missing_var_raises(sample_config_dict, monkeypatch):
+    monkeypatch.delenv(_MEMORY_MCP_API_KEYS_ENV, raising=False)
+
+    cfg = dict(sample_config_dict)
+    del cfg["auth"]["api_keys"]
+    cfg["auth"]["api_keys_from_env"] = _MEMORY_MCP_API_KEYS_ENV
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(cfg)
+    assert exc_info.value.error_code == "CONFIG_MISSING_API_KEYS_ENV"
+
+
+def test_api_keys_from_env_invalid_json_raises(sample_config_dict, monkeypatch):
+    monkeypatch.setenv(_MEMORY_MCP_API_KEYS_ENV, "not-json")
+
+    cfg = dict(sample_config_dict)
+    del cfg["auth"]["api_keys"]
+    cfg["auth"]["api_keys_from_env"] = _MEMORY_MCP_API_KEYS_ENV
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(cfg)
+    assert exc_info.value.error_code == "CONFIG_INVALID_API_KEYS_JSON"
+
+
+def test_api_keys_from_env_not_dict_raises(sample_config_dict, monkeypatch):
+    monkeypatch.setenv(_MEMORY_MCP_API_KEYS_ENV, "[1, 2, 3]")
+
+    cfg = dict(sample_config_dict)
+    del cfg["auth"]["api_keys"]
+    cfg["auth"]["api_keys_from_env"] = _MEMORY_MCP_API_KEYS_ENV
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(cfg)
+    assert exc_info.value.error_code == "CONFIG_INVALID_API_KEYS_JSON"
+
+
+def test_no_api_keys_and_no_env_raises(sample_config_dict):
+    cfg = dict(sample_config_dict)
+    del cfg["auth"]["api_keys"]
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(cfg)
+    assert exc_info.value.error_code == "CONFIG_MISSING_API_KEYS"
+
+
+def test_env_api_keys_are_redacted_in_log(sample_config_dict, caplog, monkeypatch):
+    caplog.set_level(logging.DEBUG)
+    env_keys = '{"secret-key-1": "admin"}'
+    monkeypatch.setenv(_MEMORY_MCP_API_KEYS_ENV, env_keys)
+
+    cfg = dict(sample_config_dict)
+    del cfg["auth"]["api_keys"]
+    cfg["auth"]["api_keys_from_env"] = _MEMORY_MCP_API_KEYS_ENV
+
+    load_config(cfg)
+    entries = _parse_logs(caplog)
+    loaded_entry = next(e for e in entries if e.get("event") == "config.loaded")
+
+    auth_data = loaded_entry["data"]["auth"]
+    assert "api_keys_from_env" in auth_data
+    assert auth_data["api_keys_from_env"] == "<redacted>"
+    assert "api_keys" not in auth_data or all(
+        v == "<redacted>" for v in auth_data["api_keys"].values()
+    )

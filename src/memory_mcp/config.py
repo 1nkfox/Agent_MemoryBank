@@ -7,7 +7,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +117,8 @@ def _sanitize_config(raw: dict[str, Any]) -> dict[str, Any]:
             auth_copy = dict(value)
             if "api_keys" in auth_copy and isinstance(auth_copy["api_keys"], dict):
                 auth_copy["api_keys"] = {k: "<redacted>" for k in auth_copy["api_keys"]}
+            if auth_copy.get("api_keys_from_env"):
+                auth_copy["api_keys_from_env"] = "<redacted>"
             result[key] = auth_copy
         else:
             result[key] = value
@@ -158,6 +160,21 @@ def validate_config(config_dict: dict[str, Any]) -> None:
         )
         raise ConfigError(f"Unsafe vault root: {vault_root}", "CONFIG_UNSAFE_VAULT_ROOT")
 
+    auth_section = config_dict.get("auth", {})
+    has_api_keys = bool(auth_section.get("api_keys"))
+    has_env_keys = bool(auth_section.get("api_keys_from_env"))
+    if not has_api_keys and not has_env_keys:
+        _log_structured(
+            logging.ERROR, "config.invalid",
+            error_code="CONFIG_MISSING_API_KEYS",
+            function="validate_config", block="M-011",
+            data={"reason": "auth section must have api_keys or api_keys_from_env"},
+        )
+        raise ConfigError(
+            "auth section must contain 'api_keys' or 'api_keys_from_env'",
+            "CONFIG_MISSING_API_KEYS",
+        )
+
     vector_backend = config_dict.get("vector", {}).get("backend", "")
     if vector_backend not in VALID_VECTOR_BACKENDS:
         _log_structured(
@@ -172,6 +189,38 @@ def validate_config(config_dict: dict[str, Any]) -> None:
         )
 
 
+def _resolve_api_keys(auth_section: dict[str, Any]) -> dict[str, str]:
+    env_var_name = auth_section.get("api_keys_from_env", "")
+    if env_var_name:
+        raw = os.environ.get(env_var_name, "")
+        if not raw:
+            _log_structured(
+                logging.ERROR, "config.invalid",
+                error_code="CONFIG_MISSING_API_KEYS_ENV",
+                function="_resolve_api_keys", block="M-011",
+                data={"env_var": env_var_name},
+            )
+            raise ConfigError(
+                f"Environment variable '{env_var_name}' is empty or not set",
+                "CONFIG_MISSING_API_KEYS_ENV",
+            )
+        try:
+            keys: Any = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ConfigError(
+                f"Environment variable '{env_var_name}' contains invalid JSON: {exc}",
+                "CONFIG_INVALID_API_KEYS_JSON",
+            ) from exc
+        if not isinstance(keys, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in keys.items()):
+            raise ConfigError(
+                f"Environment variable '{env_var_name}' must contain a JSON object with string keys and values",
+                "CONFIG_INVALID_API_KEYS_JSON",
+            )
+        return cast(dict[str, str], keys)
+
+    return cast(dict[str, str], auth_section.get("api_keys", {}))
+
+
 def load_config(config_dict: dict[str, Any]) -> ServerConfig:
     validate_config(config_dict)
 
@@ -180,7 +229,8 @@ def load_config(config_dict: dict[str, Any]) -> ServerConfig:
         host=config_dict["server"]["host"],
         port=config_dict["server"]["port"],
     )
-    auth = AuthSettings(api_keys=config_dict["auth"]["api_keys"])
+    api_keys = _resolve_api_keys(config_dict.get("auth", {}))
+    auth = AuthSettings(api_keys=api_keys)
     policy = PolicySettings(
         allowlist_roots=config_dict["policy"]["allowlist_roots"],
         denylist_roots=config_dict["policy"]["denylist_roots"],

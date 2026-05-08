@@ -6,7 +6,6 @@ import uuid
 
 from memory_mcp.observability import (
     ErrorCode,
-    _redact_data,
     log_trace_anchor,
     new_trace_id,
 )

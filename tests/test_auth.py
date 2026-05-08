@@ -6,7 +6,7 @@ import logging
 import pytest
 
 from memory_mcp.auth import AgentIdentity, AuthError, resolve_identity
-from memory_mcp.config import AuthSettings, load_config
+from memory_mcp.config import load_config
 
 
 def _parse_logs(caplog) -> list[dict]:

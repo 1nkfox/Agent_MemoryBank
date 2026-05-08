@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GRACERequirements id="REQ-ROOT-001" project="ObsidianMemoryMCP" status="approved" version="1.0" approved_at="2026-05-08T01:27:40+03:00">
+  <Metadata id="REQ-META-001">
+    <title>MCP-сервер памяти для Obsidian Vault</title>
+    <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
+    <approval>Архитектура утверждена пользователем 2026-05-08; документы GRACE могут быть сгенерированы.</approval>
+    <language>ru</language>
+  </Metadata>
+
+  <ProductGoal id="GOAL-001">
+    <statement>Создать личный MCP-сервер памяти на VPS, который даёт агентам безопасный, проверяемый и аудитируемый доступ к Obsidian Vault.</statement>
+    <rationale>Vault остаётся главным источником истины, а MCP-сервер добавляет контролируемый слой чтения, записи, поиска и аудита для автономных агентов.</rationale>
+  </ProductGoal>
+
+  <ArchitecturalFormula id="AF-001">
+    <principle id="AF-P-001">Vault is truth.</principle>
+    <principle id="AF-P-002">Index is derivative.</principle>
+    <principle id="AF-P-003">Writes are planned.</principle>
+    <principle id="AF-P-004">Patches are constrained.</principle>
+    <principle id="AF-P-005">Revision is content hash.</principle>
+    <principle id="AF-P-006">Audit is machine-readable.</principle>
+    <principle id="AF-P-007">LOG.md is projection.</principle>
+    <principle id="AF-P-008">Search starts with FTS.</principle>
+    <principle id="AF-P-009">Semantic search comes later.</principle>
+    <principle id="AF-P-010">Wiki is propose-only.</principle>
+    <principle id="AF-P-011">Agents never delete.</principle>
+  </ArchitecturalFormula>
+
+  <Actors id="ACTORS-001">
+    <Actor id="ACT-001" name="readonly_agent">
+      <description>Агент с правами только на чтение, поиск и propose-only операции.</description>
+    </Actor>
+    <Actor id="ACT-002" name="trusted_writer">
+      <description>Доверенный агент, которому разрешены create, append, constrained edit и controlled write при dry-run, diff и expected_revision.</description>
+    </Actor>
+    <Actor id="ACT-003" name="wiki_maintainer">
+      <description>Агент, который может искать источники и предлагать изменения wiki, но не пишет напрямую в 70_Wiki.</description>
+    </Actor>
+    <Actor id="ACT-004" name="cron_summarizer">
+      <description>Периодический агент суммаризации с возможностью добавлять материалы в summaries без full-file write.</description>
+    </Actor>
+    <Actor id="ACT-005" name="admin">
+      <description>Администратор с trusted operations, кроме delete и bulk move, запрещённых в MVP.</description>
+    </Actor>
+  </Actors>
+
+  <UseCases id="UCS-001">
+    <UseCase id="UC-001" name="PrivateMCPAccess">
+      <summary>Агент подключается к MCP endpoint через Streamable HTTP внутри Tailscale/WireGuard сети.</summary>
+      <primary_actor>ACT-001</primary_actor>
+      <success_criteria>Endpoint не доступен публично; каждый request получает identity, policy decision и trace_id.</success_criteria>
+      <linked_flows>DF-001 DF-002 DF-003</linked_flows>
+    </UseCase>
+    <UseCase id="UC-002" name="SafeVaultRead">
+      <summary>Агент читает разрешенную заметку и получает content, metadata и revision.</summary>
+      <primary_actor>ACT-001</primary_actor>
+      <success_criteria>Path нормализован, denylist и symlink policy применены, revision равен sha256(content).</success_criteria>
+      <linked_flows>DF-001</linked_flows>
+    </UseCase>
+    <UseCase id="UC-003" name="SearchVaultMemory">
+      <summary>Агент выполняет keyword/FTS search по Vault без утечки denylisted paths.</summary>
+      <primary_actor>ACT-001</primary_actor>
+      <success_criteria>Поиск использует SQLite FTS5, результаты повторно фильтруются policy guard, ranking explainable.</success_criteria>
+      <linked_flows>DF-003</linked_flows>
+    </UseCase>
+    <UseCase id="UC-004" name="CreateOrAppendMemory">
+      <summary>Trusted writer создаёт новую заметку или добавляет контент в разрешённый раздел Vault.</summary>
+      <primary_actor>ACT-002</primary_actor>
+      <success_criteria>Операция проходит policy, lock/revision handling, atomic write, audit event и возвращает affected_paths.</success_criteria>
+      <linked_flows>DF-002 DF-004</linked_flows>
+    </UseCase>
+    <UseCase id="UC-005" name="ConstrainedEditMemory">
+      <summary>Trusted writer редактирует заметку только через разрешённые patch operations.</summary>
+      <primary_actor>ACT-002</primary_actor>
+      <success_criteria>expected_revision и dry_run обязательны; diff возвращён; stale revision отклоняется; post-apply validation выполнена.</success_criteria>
+      <linked_flows>DF-002</linked_flows>
+    </UseCase>
+    <UseCase id="UC-006" name="TrustedFullWrite">
+      <summary>Trusted writer или admin выполняет controlled full-file replacement.</summary>
+      <primary_actor>ACT-002</primary_actor>
+      <success_criteria>write_note требует trusted profile, expected_revision, dry_run, diff, size limit, denylist check и audit event.</success_criteria>
+      <linked_flows>DF-002</linked_flows>
+    </UseCase>
+    <UseCase id="UC-007" name="PromoteInboxOrDraft">
+      <summary>Trusted profile переносит одну заметку из inbox или будущего drafts в memory или summaries.</summary>
+      <primary_actor>ACT-002</primary_actor>
+      <success_criteria>Операция single-file only, dry-run required, overwrite запрещён, denylisted folders запрещены, audit записан.</success_criteria>
+      <linked_flows>DF-006</linked_flows>
+    </UseCase>
+    <UseCase id="UC-008" name="WikiProposeOnlyUpdate">
+      <summary>Wiki maintainer генерирует source-linked diff для 70_Wiki без автономной записи.</summary>
+      <primary_actor>ACT-003</primary_actor>
+      <success_criteria>Система возвращает proposal diff и источники; direct write в 70_Wiki запрещён.</success_criteria>
+      <linked_flows>DF-005</linked_flows>
+    </UseCase>
+    <UseCase id="UC-009" name="IndexRefreshAfterMutation">
+      <summary>После успешной mutation система обновляет производный индекс по affected_paths.</summary>
+      <primary_actor>ACT-005</primary_actor>
+      <success_criteria>M-008 не вызывает M-014 напрямую; M-001 или background worker вызывает refresh_paths.</success_criteria>
+      <linked_flows>DF-004</linked_flows>
+    </UseCase>
+    <UseCase id="UC-010" name="AuditAndHumanProjection">
+      <summary>Каждая mutation фиксируется в authoritative audit и проецируется в LOG.md.</summary>
+      <primary_actor>ACT-002</primary_actor>
+      <success_criteria>Audit event содержит event_id, timestamp, agent_id, operation, path, revisions, dry_run, profile, result, affected_paths, trace_id.</success_criteria>
+      <linked_flows>DF-002</linked_flows>
+    </UseCase>
+    <UseCase id="UC-011" name="OperationalHealthAndBackup">
+      <summary>Admin проверяет health и запускает manual Git backup без rollback API.</summary>
+      <primary_actor>ACT-005</primary_actor>
+      <success_criteria>health_check отражает transport, vault, index, audit and policy state; backup не изменяет content Vault.</success_criteria>
+      <linked_flows>DF-001 DF-004</linked_flows>
+    </UseCase>
+  </UseCases>
+
+  <FunctionalRequirements id="FRS-001">
+    <Requirement id="FR-001" priority="must">Сервер должен предоставлять MCP tools через Streamable HTTP, доступный только внутри Tailscale/WireGuard private network.</Requirement>
+    <Requirement id="FR-002" priority="must">Сервер должен определять agent identity, API key, role и policy profile до доступа к Vault.</Requirement>
+    <Requirement id="FR-003" priority="must">VaultPolicyGuard должен применять allowlist, denylist, propose-only, dry-run, no-delete, no-bulk-move и symlink-deny policy.</Requirement>
+    <Requirement id="FR-004" priority="must">Revision для optimistic concurrency должен вычисляться как sha256(content).</Requirement>
+    <Requirement id="FR-005" priority="must">mtime и size могут использоваться только как hints/metadata для refresh и optimization, но не как concurrency revision.</Requirement>
+    <Requirement id="FR-006" priority="must">read_note должен возвращать content, revision и metadata только для разрешённых paths.</Requirement>
+    <Requirement id="FR-007" priority="must">create_note и append_note должны проходить единый policy/mutation/audit pipeline.</Requirement>
+    <Requirement id="FR-008" priority="must">edit_note должен принимать только constrained patch operations: append_under_heading, replace_section, replace_exact_text, replace_exact_block, insert_after_heading.</Requirement>
+    <Requirement id="FR-009" priority="must">edit_note и write_note должны требовать expected_revision, dry_run и diff.</Requirement>
+    <Requirement id="FR-010" priority="must">Перед фактической записью система должна повторно вычислять current sha256(content) для защиты от external sync race.</Requirement>
+    <Requirement id="FR-011" priority="must">Mutation result должен возвращать affected_paths, old_revision, new_revision, audit_event_id и dry_run flag.</Requirement>
+    <Requirement id="FR-012" priority="must">VaultMutationService не должен напрямую вызывать IndexRefreshService.</Requirement>
+    <Requirement id="FR-013" priority="must">IndexRefreshService должен поддерживать startup_reconcile и incremental refresh по affected_paths.</Requirement>
+    <Requirement id="FR-014" priority="must">Search baseline должен использовать SQLite FTS5.</Requirement>
+    <Requirement id="FR-015" priority="should">VectorSearchAdapter должен поддерживать disabled, sqlite_vec и qdrant_optional modes после MVP.</Requirement>
+    <Requirement id="FR-016" priority="must">Machine-readable audit должен быть authoritative; LOG.md должен быть только human-readable projection.</Requirement>
+    <Requirement id="FR-017" priority="must">Delete operations запрещены в MVP.</Requirement>
+    <Requirement id="FR-018" priority="must">Bulk move и bulk rename запрещены в MVP.</Requirement>
+    <Requirement id="FR-019" priority="must">move_note_once и promote_note должны быть single-file trusted-only operations с dry-run и no-overwrite.</Requirement>
+    <Requirement id="FR-020" priority="must">70_Wiki должен быть propose-only path; autonomous direct write запрещён.</Requirement>
+    <Requirement id="FR-021" priority="must">Все symlink paths и paths с symlink parent component должны отклоняться в MVP.</Requirement>
+    <Requirement id="FR-022" priority="must">BackupService должен использовать manual Git backup/health integration без rollback API в MVP.</Requirement>
+  </FunctionalRequirements>
+
+  <NonFunctionalRequirements id="NFRS-001">
+    <Requirement id="NFR-001" category="security" priority="must">Сервер не должен быть публично доступен из интернета.</Requirement>
+    <Requirement id="NFR-002" category="safety" priority="must">Ни одна write operation не должна обходить PolicyGuard, ChangePlanner, LockAndRevisionService и AuditLogService.</Requirement>
+    <Requirement id="NFR-003" category="reliability" priority="must">SQLite должен работать в WAL mode с busy_timeout и single writer queue для index updates.</Requirement>
+    <Requirement id="NFR-004" category="recoverability" priority="must">Vault Markdown files должны оставаться пригодными к чтению и восстановлению без MCP-сервера.</Requirement>
+    <Requirement id="NFR-005" category="observability" priority="must">Критические flows должны иметь trace_id и structured log anchors.</Requirement>
+    <Requirement id="NFR-006" category="privacy" priority="must">Denylisted paths private/, secrets/, .obsidian/, .git/ не должны попадать в read/search responses.</Requirement>
+    <Requirement id="NFR-007" category="maintainability" priority="should">Модули должны сохранять DAG-зависимости без циклической связности.</Requirement>
+    <Requirement id="NFR-008" category="autonomy" priority="must">Stop conditions из verification plan должны останавливать реализацию при нарушении safety boundaries.</Requirement>
+  </NonFunctionalRequirements>
+
+  <PolicyShape id="POL-001">
+    <write_allowlist>
+      <path id="POL-WA-001">inbox/</path>
+      <path id="POL-WA-002">memory/</path>
+      <path id="POL-WA-003">summaries/</path>
+      <path id="POL-WA-004">LOG.md</path>
+    </write_allowlist>
+    <propose_only_paths>
+      <path id="POL-PO-001">70_Wiki/</path>
+    </propose_only_paths>
+    <future_write_paths disabled_by_default="true">
+      <path id="POL-FW-001">drafts/</path>
+    </future_write_paths>
+    <denylist>
+      <path id="POL-DN-001">private/</path>
+      <path id="POL-DN-002">secrets/</path>
+      <path id="POL-DN-003">.obsidian/</path>
+      <path id="POL-DN-004">.git/</path>
+    </denylist>
+    <delete_allowed>false</delete_allowed>
+    <bulk_move_allowed>false</bulk_move_allowed>
+    <symlinks_allowed>false</symlinks_allowed>
+  </PolicyShape>
+
+  <PatchPolicy id="PP-001">
+    <allowed_operation id="PP-OP-001">append_under_heading</allowed_operation>
+    <allowed_operation id="PP-OP-002">replace_section</allowed_operation>
+    <allowed_operation id="PP-OP-003">replace_exact_text</allowed_operation>
+    <allowed_operation id="PP-OP-004">replace_exact_block</allowed_operation>
+    <allowed_operation id="PP-OP-005">insert_after_heading</allowed_operation>
+    <denied_operation id="PP-DENY-001">free_form_regex_patch</denied_operation>
+    <denied_operation id="PP-DENY-002">llm_unconstrained_patch</denied_operation>
+    <requirement id="PP-REQ-001">expected_revision</requirement>
+    <requirement id="PP-REQ-002">dry_run</requirement>
+    <requirement id="PP-REQ-003">diff</requirement>
+    <requirement id="PP-REQ-004">post_apply_validation</requirement>
+  </PatchPolicy>
+
+  <MVPBoundaries id="MVP-001">
+    <Included id="MVP-IN-001">Streamable HTTP over Tailscale/WireGuard</Included>
+    <Included id="MVP-IN-002">Obsidian Sync-aware revision checks</Included>
+    <Included id="MVP-IN-003">sha256(content) revision</Included>
+    <Included id="MVP-IN-004">Auth profiles and PolicyGuard</Included>
+    <Included id="MVP-IN-005">safe path resolution and symlink deny</Included>
+    <Included id="MVP-IN-006">create_note, append_note, constrained edit_note, trusted write_note</Included>
+    <Included id="MVP-IN-007">single move/promote contract</Included>
+    <Included id="MVP-IN-008">machine-readable audit and LOG.md projection</Included>
+    <Included id="MVP-IN-009">SQLite FTS5 with WAL and single writer queue</Included>
+    <Included id="MVP-IN-010">affected_paths index refresh</Included>
+    <Included id="MVP-IN-011">health_check and manual Git backup</Included>
+    <Excluded id="MVP-EX-001">Qdrant as required dependency</Excluded>
+    <Excluded id="MVP-EX-002">autonomous wiki write</Excluded>
+    <Excluded id="MVP-EX-003">rollback API</Excluded>
+    <Excluded id="MVP-EX-004">complex semantic search</Excluded>
+    <Excluded id="MVP-EX-005">bulk operations</Excluded>
+    <Excluded id="MVP-EX-006">delete</Excluded>
+    <Excluded id="MVP-EX-007">free-form regex patch</Excluded>
+    <Excluded id="MVP-EX-008">unrestricted move/rename</Excluded>
+  </MVPBoundaries>
+</GRACERequirements>

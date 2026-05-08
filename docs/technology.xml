@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GRACETechnology id="TECH-ROOT-001" project="ObsidianMemoryMCP" status="approved" version="1.0">
+  <Metadata id="TECH-META-001">
+    <title>Technology Decisions for Obsidian Memory MCP Server</title>
+    <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
+    <approval>Architecture approved by user before artifact generation.</approval>
+  </Metadata>
+
+  <RuntimeStack id="STACK-001">
+    <language id="TECH-LANG-001" name="Python" version_policy="modern_stable">Python is the preferred runtime because MCP servers, async HTTP, SQLite tooling and filesystem safety are well-supported and easy to verify.</language>
+    <async_runtime id="TECH-ASYNC-001">asyncio</async_runtime>
+    <package_layout id="TECH-LAYOUT-001">src/memory_mcp package layout</package_layout>
+    <rationale>Python + asyncio keeps the server simple for local VPS deployment while supporting Streamable HTTP, file IO orchestration and testable service boundaries.</rationale>
+  </RuntimeStack>
+
+  <Transport id="TRANSPORT-001">
+    <protocol id="TECH-TR-001">MCP Streamable HTTP</protocol>
+    <network_boundary id="TECH-TR-002">Tailscale/WireGuard private network only</network_boundary>
+    <public_internet_exposure>false</public_internet_exposure>
+    <rationale>Private network transport reduces attack surface while allowing multiple MCP clients and agents to connect over HTTP.</rationale>
+  </Transport>
+
+  <Storage id="STORAGE-001">
+    <vault_source_of_truth id="TECH-ST-001">Obsidian Vault Markdown files</vault_source_of_truth>
+    <external_sync id="ES-001" mode="obsidian_sync">
+      <revision_model>sha256(content)</revision_model>
+      <before_write>recompute_current_revision</before_write>
+      <on_revision_mismatch>reject_with_conflict</on_revision_mismatch>
+      <after_write>recompute_new_revision</after_write>
+      <index_strategy>startup_reconcile + incremental_refresh</index_strategy>
+    </external_sync>
+    <filesystem_policy id="TECH-FS-001">
+      <path_normalization>required</path_normalization>
+      <path_traversal>deny</path_traversal>
+      <symlinks_allowed>false</symlinks_allowed>
+      <atomic_write>required_for_mutations</atomic_write>
+    </filesystem_policy>
+    <rationale>Obsidian Sync may modify files outside the MCP server, therefore content-hash revision checks are required immediately before write.</rationale>
+  </Storage>
+
+  <Database id="DB-001">
+    <engine id="TECH-DB-001">SQLite</engine>
+    <journal_mode id="TECH-DB-002">WAL</journal_mode>
+    <busy_timeout id="TECH-DB-003">enabled</busy_timeout>
+    <writer_model id="TECH-DB-004">single_writer_queue</writer_model>
+    <reader_model id="TECH-DB-005">multiple_readers</reader_model>
+    <rationale>SQLite WAL and a single writer queue provide enough reliability for a personal Vault while avoiding external infrastructure.</rationale>
+  </Database>
+
+  <SearchStack id="SEARCH-001">
+    <baseline_backend id="TECH-SRCH-001">SQLite FTS5</baseline_backend>
+    <future_vector_backend id="TECH-SRCH-002">sqlite-vec</future_vector_backend>
+    <optional_vector_backend id="TECH-SRCH-003">qdrant_optional</optional_vector_backend>
+    <vector_adapter_modes id="TECH-SRCH-004">
+      <mode id="VA-MODE-001">disabled</mode>
+      <mode id="VA-MODE-002">sqlite_vec</mode>
+      <mode id="VA-MODE-003">qdrant_optional</mode>
+    </vector_adapter_modes>
+    <rationale>FTS5 is reliable and rebuildable for MVP. sqlite-vec is preferred after MVP because it preserves local-first deployment; Qdrant remains optional for larger Vaults.</rationale>
+  </SearchStack>
+
+  <IndexSchema id="IDX-SCHEMA-001">
+    <table id="IDX-TBL-001">notes</table>
+    <table id="IDX-TBL-002">notes_fts</table>
+    <table id="IDX-TBL-003">links</table>
+    <table id="IDX-TBL-004">sections</table>
+    <table id="IDX-TBL-005">frontmatter</table>
+    <table id="IDX-TBL-006">tags</table>
+    <table id="IDX-TBL-007">audit_log</table>
+    <table id="IDX-TBL-008">index_state</table>
+    <future_table id="IDX-TBL-009">note_chunks_vec</future_table>
+    <rationale>The schema stores derivative metadata that can be rebuilt from Vault content and supports keyword, structural and future vector retrieval.</rationale>
+  </IndexSchema>
+
+  <AuditStack id="AUDIT-001">
+    <authoritative_options id="TECH-AUD-001">
+      <option id="AUD-OPT-001">SQLite audit_log table</option>
+      <option id="AUD-OPT-002">append-only NDJSON log</option>
+    </authoritative_options>
+    <preferred_mvp id="TECH-AUD-002">SQLite audit_log table unless operational simplicity favors NDJSON</preferred_mvp>
+    <human_projection id="TECH-AUD-003">LOG.md</human_projection>
+    <event_fields id="TECH-AUD-004">
+      <field id="AUD-FLD-001">event_id</field>
+      <field id="AUD-FLD-002">timestamp</field>
+      <field id="AUD-FLD-003">agent_id</field>
+      <field id="AUD-FLD-004">operation</field>
+      <field id="AUD-FLD-005">path</field>
+      <field id="AUD-FLD-006">old_revision</field>
+      <field id="AUD-FLD-007">new_revision</field>
+      <field id="AUD-FLD-008">dry_run</field>
+      <field id="AUD-FLD-009">policy_profile</field>
+      <field id="AUD-FLD-010">result</field>
+      <field id="AUD-FLD-011">affected_paths</field>
+      <field id="AUD-FLD-012">trace_id</field>
+    </event_fields>
+    <rationale>Machine-readable audit is necessary for traceability and verification; LOG.md is useful but not authoritative because Markdown can be manually edited or corrupted.</rationale>
+  </AuditStack>
+
+  <SecurityStack id="SEC-001">
+    <auth_model id="TECH-SEC-001">API key to agent identity and policy profile</auth_model>
+    <profiles id="TECH-SEC-002">
+      <profile id="PROFILE-001" name="readonly_agent">read/search only; propose_only=true</profile>
+      <profile id="PROFILE-002" name="trusted_writer">read/search/create/append/edit/write; dry_run required</profile>
+      <profile id="PROFILE-003" name="wiki_maintainer">read/search/find_wiki_sources/propose_wiki_update</profile>
+      <profile id="PROFILE-004" name="cron_summarizer">read/search/append summaries; no full write</profile>
+      <profile id="PROFILE-005" name="admin">trusted operations except delete and bulk move</profile>
+    </profiles>
+    <rationale>Profiles limit blast radius when an agent is compromised or issues an incorrect tool call.</rationale>
+  </SecurityStack>
+
+  <ObservabilityStack id="OBS-001">
+    <structured_logging id="TECH-OBS-001">required</structured_logging>
+    <request_ids id="TECH-OBS-002">required</request_ids>
+    <trace_anchors id="TECH-OBS-003">required for critical flows</trace_anchors>
+    <error_taxonomy id="TECH-OBS-004">required</error_taxonomy>
+    <rationale>Autonomous agents need precise trace evidence for policy decisions, patch validation, lock acquisition, revision checks, audit and index refresh.</rationale>
+  </ObservabilityStack>
+
+  <TestingStack id="TEST-001">
+    <unit_tests id="TECH-TST-001">pytest</unit_tests>
+    <async_tests id="TECH-TST-002">pytest-asyncio</async_tests>
+    <filesystem_tests id="TECH-TST-003">temporary isolated Vault fixtures</filesystem_tests>
+    <sqlite_tests id="TECH-TST-004">temporary SQLite databases with WAL checks</sqlite_tests>
+    <contract_tests id="TECH-TST-005">MCP tool contract tests and policy matrix tests</contract_tests>
+    <trace_tests id="TECH-TST-006">log/trace anchor assertions for critical flows</trace_tests>
+    <rationale>Tests must verify contracts, not just implementation details, because autonomous execution depends on stable module boundaries.</rationale>
+  </TestingStack>
+
+  <DiscouragedTechnologies id="DISCOURAGED-001">
+    <technology id="DISC-001">Public internet exposure for MCP endpoint</technology>
+    <technology id="DISC-002">Qdrant as required MVP dependency</technology>
+    <technology id="DISC-003">Free-form regex patch as default edit mechanism</technology>
+    <technology id="DISC-004">Unconstrained LLM-generated patch format</technology>
+    <technology id="DISC-005">mtime-only optimistic concurrency</technology>
+    <technology id="DISC-006">Index as source of truth</technology>
+    <technology id="DISC-007">Direct autonomous writes to 70_Wiki</technology>
+    <technology id="DISC-008">Delete and bulk move operations in MVP</technology>
+    <rationale>These choices weaken safety, verification, recoverability or local-first deployment.</rationale>
+  </DiscouragedTechnologies>
+</GRACETechnology>

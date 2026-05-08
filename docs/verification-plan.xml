@@ -1,0 +1,1216 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GRACEVerificationPlan id="VER-ROOT-001" project="ObsidianMemoryMCP" status="approved" version="2.2" updated_at="2026-05-08">
+  <Metadata id="VER-META-001">
+    <title>Verification Plan for Obsidian Memory MCP Server — Autonomous-Ready</title>
+    <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
+    <approval>Architecture approved by user; verification gates are mandatory for autonomous execution.</approval>
+      <version_note>v2.0 adds: verification matrix, telemetry spec, test harness designs, failure packet format, autonomy gap assessment. v2.1: autonomy readiness updated to reflect implemented codebase (all 19 modules + tests exist). v2.2: M-001 server wiring complete (12 tools), M-020 HTTP transport added, env-based API key injection, M-008→M-014 forbidden arch preserved.</version_note>
+  </Metadata>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- GLOBAL POLICY — How verification is governed project-wide        -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <GlobalPolicy id="VER-POLICY-001">
+    <rule id="VER-RULE-001">Every module must have module-local tests matching its MODULE_CONTRACT.</rule>
+    <rule id="VER-RULE-002">Every critical flow must have at least one integration-level scenario.</rule>
+    <rule id="VER-RULE-003">Every mutation test must verify dry-run, diff, revision recheck, audit event and affected_paths.</rule>
+    <rule id="VER-RULE-004">Every path-facing test must include traversal, denylist and symlink rejection cases.</rule>
+    <rule id="VER-RULE-005">Every retrieval response must be policy-filtered even when index contents are stale.</rule>
+    <rule id="VER-RULE-006">Any stop condition failure blocks further execution until architecture or contracts are revised.</rule>
+    <rule id="VER-RULE-007">Deterministic assertions first; trace assertions second; semantic evaluation only when exact asserts are insufficient.</rule>
+    <rule id="VER-RULE-008">Every log entry from a critical block must include trace_id, module, function, and BLOCK_NAME marker.</rule>
+    <rule id="VER-RULE-009">Secrets, API keys, credentials must be redacted from all log output. Redaction is tested.</rule>
+    <rule id="VER-RULE-010">Module-level verification must complete in under 30s for worker-loop viability.</rule>
+  </GlobalPolicy>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- TELEMETRY & OBSERVABILITY SPECIFICATION                          -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <TelemetrySpec id="TELEM-001">
+    <LogFormat>
+      <format>Structured JSON</format>
+      <required_fields>
+        <field name="timestamp" type="ISO8601" required="always" />
+        <field name="level" type="enum" values="DEBUG|INFO|WARN|ERROR" required="always" />
+        <field name="trace_id" type="string[uuid]" required="for all request-scoped operations" />
+        <field name="module" type="string" required="always — e.g. VaultPolicyGuard" />
+        <field name="function" type="string" required="always — e.g. authorize_operation" />
+        <field name="block" type="string" required="for critical branches — e.g. DENYLIST_CHECK" />
+        <field name="event" type="string" required="always — stable event key" />
+        <field name="data" type="object" required="optional — structured payload; never raw secrets" />
+        <field name="error_code" type="string" required="on WARN|ERROR — from ErrorCode taxonomy" />
+      </required_fields>
+    </LogFormat>
+
+    <MarkerConvention>
+      <rule>Every critical log must include a BLOCK_NAME matching its semantic block tag in source.</rule>
+      <rule>Format: [ModuleName][functionName][BLOCK_NAME]</rule>
+      <example>[VaultPolicyGuard][authorize_operation][DENYLIST_CHECK] path=private/secrets.md allowed=false</example>
+      <example>[LockAndRevisionService][recheck_revision][REVISION_MISMATCH] expected=abc123 actual=def456</example>
+      <example>[AuditLogService][record_event][EVENT_APPENDED] event_id=evt-001 trace_id=uuid-x</example>
+    </MarkerConvention>
+
+    <RedactionRules id="REDACT-001">
+      <rule id="REDACT-R-001">API key values — log only key_id fingerprint (first 4 chars + last 4 chars).</rule>
+      <rule id="REDACT-R-002">Vault file content — never log full content; log content_hash and byte_count.</rule>
+      <rule id="REDACT-R-003">Credentials in config — never log raw config; log sanitized summary only.</rule>
+      <rule id="REDACT-R-004">Patch/diff content — log operation type and affected_heading; never full body in prod.</rule>
+      <rule id="REDACT-R-005">Secrets (private/, secrets/ paths) — log only that a denied path was referenced, not the path literal if it contains secret names.</rule>
+    </RedactionRules>
+
+    <RequiredLogEntries>
+      <!-- Every MCP tool request must produce at minimum these events -->
+      <entry id="REQ-LOG-001" marker="request.received" trace_id="yes">M-001 receives tool call</entry>
+      <entry id="REQ-LOG-002" marker="auth.identity.resolved" trace_id="yes">M-002 resolves identity</entry>
+      <entry id="REQ-LOG-003" marker="policy.decision" trace_id="yes">M-003 authorizes/rejects</entry>
+      <entry id="REQ-LOG-004" marker="request.completed" trace_id="yes">M-001 returns result</entry>
+      <entry id="REQ-LOG-005" marker="request.failed" trace_id="yes">M-001 returns error with error_code</entry>
+    </RequiredLogEntries>
+  </TelemetrySpec>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- TRACE ANCHORS — Canonical markers asserted in trace tests       -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <TraceAnchors id="TRACE-ANCHORS-001">
+    <trace-anchor id="TA-001" name="auth.identity.resolved" module="M-002" />
+    <trace-anchor id="TA-001b" name="auth.identity.rejected" module="M-002" />
+    <trace-anchor id="TA-002" name="policy.decision" module="M-003" />
+    <trace-anchor id="TA-002b" name="policy.denied" module="M-003" />
+    <trace-anchor id="TA-003" name="change.plan.created" module="M-006" />
+    <trace-anchor id="TA-004" name="patch.validation.completed" module="M-006" />
+    <trace-anchor id="TA-004b" name="patch.validation.failed" module="M-006" />
+    <trace-anchor id="TA-005" name="lock.acquired" module="M-007" />
+    <trace-anchor id="TA-006" name="revision.rechecked" module="M-007" />
+    <trace-anchor id="TA-006b" name="revision.mismatch" module="M-007" />
+    <trace-anchor id="TA-007" name="vault.atomic_write.completed" module="M-005" />
+    <trace-anchor id="TA-008" name="audit.authoritative_event.appended" module="M-009" />
+    <trace-anchor id="TA-009" name="audit.log_projection.updated" module="M-009" />
+    <trace-anchor id="TA-010" name="mutation.affected_paths.returned" module="M-008" />
+    <trace-anchor id="TA-011" name="index.refresh.started" module="M-014" />
+    <trace-anchor id="TA-012" name="index.refresh.completed" module="M-014" />
+    <trace-anchor id="TA-013" name="retrieval.query.completed" module="M-010" />
+    <trace-anchor id="TA-014" name="retrieval.denied_path.filtered" module="M-010" />
+    <trace-anchor id="TA-015" name="wiki.diff.generated" module="M-018" />
+    <trace-anchor id="TA-016" name="backup.snapshot.completed" module="M-017" />
+    <trace-anchor id="TA-017" name="path.resolved" module="M-005" />
+    <trace-anchor id="TA-018" name="path.denied" module="M-005" />
+    <trace-anchor id="TA-019" name="config.loaded" module="M-011" />
+    <trace-anchor id="TA-020" name="config.invalid" module="M-011" />
+  </TraceAnchors>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- VERIFICATION MATRIX — All scenarios x evidence types            -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <VerificationMatrix id="VER-MATRIX-001">
+    <legend>
+      <evidence_type id="ET-DET">DETERMINISTIC — exact assert on return value, state, or hash</evidence_type>
+      <evidence_type id="ET-TRACE">TRACE — assert required/forbidden markers and order in captured logs</evidence_type>
+      <evidence_type id="ET-INT">INTEGRATION — end-to-end viability across module boundaries</evidence_type>
+      <evidence_type id="ET-SEM">SEMANTIC — rubric-based evaluation of traces (only when DET/TRACE insufficient)</evidence_type>
+    </legend>
+
+    <!-- Module-level matrix: 19 modules × scenarios -->
+    <module_matrix>
+      <!-- M-001 MCPServerEntrypoint -->
+      <row module="M-001" test_path="tests/test_server.py">
+        <scenario id="M-001-S-001" name="all_12_tools_registered" evidence="ET-DET" />
+        <scenario id="M-001-S-002" name="tool_routing_applies_auth_policy_before_service" evidence="ET-TRACE ET-INT">
+          <trace>TA-001 TA-002</trace>
+        </scenario>
+        <scenario id="M-001-S-003" name="search_notes_returns_results_with_policy_filtering" evidence="ET-DET" />
+        <scenario id="M-001-S-004" name="mutation_returns_affected_paths_and_triggers_index_refresh" evidence="ET-DET ET-TRACE">
+          <trace>TA-010 TA-011</trace>
+        </scenario>
+        <scenario id="M-001-S-005" name="mutation_dry_run_does_not_trigger_refresh" evidence="ET-DET" />
+        <scenario id="M-001-S-006" name="trace_order_mutation_before_refresh" evidence="ET-TRACE" />
+        <scenario id="M-001-S-007" name="propose_wiki_update_returns_diff" evidence="ET-DET" />
+        <scenario id="M-001-S-008" name="health_check_as_tool_includes_all_modules" evidence="ET-DET" />
+        <scenario id="M-001-S-009" name="emits_trace_id_on_every_request" evidence="ET-DET ET-TRACE" />
+        <scenario id="M-001-F-001" name="unknown_tool_returns_error_with_error_code" evidence="ET-DET ET-TRACE" />
+        <scenario id="M-001-F-002" name="direct_wiki_write_is_policy_denied" evidence="ET-DET" />
+        <scenario id="M-001-F-003" name="M-008_directly_calling_M-014_violates_static_analysis" evidence="ET-DET">
+          <assert>M-008 source must not import M-014</assert>
+        </scenario>
+      </row>
+
+      <!-- M-002 AuthIdentityService -->
+      <row module="M-002" test_path="tests/test_auth.py">
+        <scenario id="M-002-S-001" name="valid_api_key_resolves_identity_and_profile" evidence="ET-DET ET-TRACE">
+          <assert>returned AgentIdentity has correct profile; TA-001 emitted</assert>
+        </scenario>
+        <scenario id="M-002-F-001" name="invalid_api_key_returns_error" evidence="ET-DET ET-TRACE">
+          <assert>TA-001b emitted; no profile returned</assert>
+        </scenario>
+        <scenario id="M-002-F-002" name="secrets_not_logged" evidence="ET-TRACE">
+          <assert>log data field NEVER contains raw API key value</assert>
+        </scenario>
+      </row>
+
+      <!-- M-003 VaultPolicyGuard -->
+      <row module="M-003" test_path="tests/test_policy.py">
+        <scenario id="M-003-S-001" name="allowlisted_path_accepted_for_read" evidence="ET-DET ET-TRACE">
+          <assert>PolicyDecision.allowed=true; TA-002 emitted</assert>
+        </scenario>
+        <scenario id="M-003-S-002" name="allowlisted_path_accepted_for_write_with_trusted_profile" evidence="ET-DET" />
+        <scenario id="M-003-F-001" name="denylisted_path_rejected" evidence="ET-DET ET-TRACE">
+          <assert>PolicyDecision.allowed=false; TA-002b emitted; path never reaches M-005</assert>
+        </scenario>
+        <scenario id="M-003-F-002" name="delete_operation_rejected_regardless_of_profile" evidence="ET-DET" />
+        <scenario id="M-003-F-003" name="bulk_move_rejected" evidence="ET-DET" />
+        <scenario id="M-003-F-004" name="70_Wiki_direct_write_rejected_even_with_trusted_profile" evidence="ET-DET" />
+        <scenario id="M-003-F-005" name="edit_without_dry_run_rejected" evidence="ET-DET" />
+        <scenario id="M-003-F-006" name="readonly_profile_write_rejected" evidence="ET-DET" />
+        <scenario id="M-003-F-007" name="symlink_path_rejected" evidence="ET-DET" />
+        <scenario id="M-003-F-008" name="filter_search_results_removes_denylisted_paths" evidence="ET-DET" />
+        <scenario id="M-003-MATRIX-001" name="full_profile_x_tool_permission_matrix_covered" evidence="ET-DET">
+          <assert>test coverage over all 5 profiles × all 14 tools</assert>
+        </scenario>
+      </row>
+
+      <!-- M-004 VaultReadService -->
+      <row module="M-004" test_path="tests/test_read_service.py">
+        <scenario id="M-004-S-001" name="read_returns_content_and_sha256_revision" evidence="ET-DET">
+          <assert>result.content == file_content; result.revision == sha256(file_content)</assert>
+        </scenario>
+        <scenario id="M-004-S-002" name="read_returns_metadata" evidence="ET-DET" />
+        <scenario id="M-004-F-001" name="denylisted_path_not_readable" evidence="ET-DET ET-TRACE">
+          <assert>policy rejection before any M-005 call</assert>
+        </scenario>
+        <scenario id="M-004-F-002" name="cannot_call_filesystem_before_policy_approval" evidence="ET-TRACE">
+          <assert>TA-002 must precede TA-017 in log order</assert>
+        </scenario>
+      </row>
+
+      <!-- M-005 VaultFilesystemRepository -->
+      <row module="M-005" test_path="tests/test_vault_fs.py">
+        <scenario id="M-005-S-001" name="normalized_path_resolves_under_vault_root" evidence="ET-DET" />
+        <scenario id="M-005-S-002" name="atomic_write_creates_temp_then_renames" evidence="ET-TRACE ET-DET">
+          <assert>file appears atomically; TA-007 emitted</assert>
+        </scenario>
+        <scenario id="M-005-S-003" name="compute_revision_returns_sha256" evidence="ET-DET" />
+        <scenario id="M-005-F-001" name="path_traversal_blocked" evidence="ET-DET">
+          <assert>../../../etc/passwd or ..\windows\system32 rejected</assert>
+        </scenario>
+        <scenario id="M-005-F-002" name="symlink_path_rejected" evidence="ET-DET ET-TRACE">
+          <assert>TA-018 emitted; resolved path rejected</assert>
+        </scenario>
+        <scenario id="M-005-F-003" name="symlink_parent_component_rejected" evidence="ET-DET">
+          <assert>path where /memory/ is symlink rejected before IO</assert>
+        </scenario>
+        <scenario id="M-005-F-004" name="resolved_path_outside_vault_root_rejected" evidence="ET-DET" />
+      </row>
+
+      <!-- M-006 ChangePlanner -->
+      <row module="M-006" test_path="tests/test_change_planner.py">
+        <scenario id="M-006-S-001" name="append_under_heading_creates_correct_diff" evidence="ET-DET">
+          <assert>diff shows new lines under target heading</assert>
+        </scenario>
+        <scenario id="M-006-S-002" name="replace_exact_block_produces_valid_plan" evidence="ET-DET ET-TRACE">
+          <assert>MutationPlan created; TA-003 TA-004 emitted</assert>
+        </scenario>
+        <scenario id="M-006-S-003" name="dry_run_returns_diff_without_touching_file" evidence="ET-DET">
+          <assert>file content unchanged after dry_run; diff shows expected change</assert>
+        </scenario>
+        <scenario id="M-006-F-001" name="free_form_regex_patch_rejected" evidence="ET-DET" />
+        <scenario id="M-006-F-002" name="llm_unconstrained_patch_rejected" evidence="ET-DET" />
+        <scenario id="M-006-F-003" name="invalid_markdown_after_apply_rejected" evidence="ET-DET">
+          <assert>post-apply validation catches broken heading structure</assert>
+        </scenario>
+        <scenario id="M-006-F-004" name="block_not_found_returns_error" evidence="ET-DET" />
+      </row>
+
+      <!-- M-007 LockAndRevisionService -->
+      <row module="M-007" test_path="tests/test_concurrency.py">
+        <scenario id="M-007-S-001" name="acquires_lock_and_rechecks_revision" evidence="ET-TRACE">
+          <assert>TA-005 then TA-006 in order</assert>
+        </scenario>
+        <scenario id="M-007-S-002" name="matching_revision_allows_proceed" evidence="ET-DET">
+          <assert>RevisionCheckResult.ok=true</assert>
+        </scenario>
+        <scenario id="M-007-F-001" name="revision_mismatch_blocks_write" evidence="ET-DET ET-TRACE">
+          <assert>TA-006b emitted; RevisionCheckResult.ok=false</assert>
+        </scenario>
+        <scenario id="M-007-F-002" name="external_sync_changes_file_between_plan_and_write" evidence="ET-TRACE">
+          <assert>recompute before write catches changed hash; conflict returned</assert>
+        </scenario>
+        <scenario id="M-007-F-003" name="concurrent_write_silently_overwriting_newer_hash_is_impossible" evidence="ET-DET">
+          <assert>SC-003 validated; no write proceeds with stale revision</assert>
+        </scenario>
+      </row>
+
+      <!-- M-008 VaultMutationService -->
+      <row module="M-008" test_path="tests/test_mutation_service.py">
+        <scenario id="M-008-S-001" name="create_note_goes_through_full_pipeline" evidence="ET-TRACE">
+          <assert>policy→plan→lock→revision→write→audit→affected_paths in order</assert>
+        </scenario>
+        <scenario id="M-008-S-002" name="append_note_returns_affected_paths" evidence="ET-DET ET-TRACE">
+          <assert>affected_paths contains target path; TA-010 emitted</assert>
+        </scenario>
+        <scenario id="M-008-S-003" name="edit_note_with_replace_exact_block_succeeds_with_matching_revision" evidence="ET-DET ET-TRACE" />
+        <scenario id="M-008-F-001" name="edit_without_dry_run_rejected" evidence="ET-DET" />
+        <scenario id="M-008-F-002" name="edit_without_expected_revision_rejected" evidence="ET-DET" />
+        <scenario id="M-008-F-003" name="M-008_does_NOT_import_M-014" evidence="ET-DET">
+          <assert>static import check; SC-002 validated</assert>
+        </scenario>
+      </row>
+
+      <!-- M-009 AuditLogService -->
+      <row module="M-009" test_path="tests/test_audit_log.py">
+        <scenario id="M-009-S-001" name="record_event_writes_authoritative_audit" evidence="ET-DET ET-TRACE">
+          <assert>TA-008 emitted; audit row exists with all 12 required fields</assert>
+        </scenario>
+        <scenario id="M-009-S-002" name="update_log_projection_appends_to_LOG_md" evidence="ET-DET ET-TRACE">
+          <assert>TA-009 emitted; LOG.md contains new projection line</assert>
+        </scenario>
+        <scenario id="M-009-F-001" name="no_recursive_audit_loop" evidence="ET-DET">
+          <assert>recording LOG.md update does not trigger another audit event for LOG.md change</assert>
+        </scenario>
+        <scenario id="M-009-F-002" name="mutation_without_audit_event_is_impossible" evidence="ET-DET">
+          <assert>M-008 always calls M-009.record_event before returning success</assert>
+        </scenario>
+      </row>
+
+      <!-- M-010 RetrievalService -->
+      <row module="M-010" test_path="tests/test_retrieval_service.py">
+        <scenario id="M-010-S-001" name="fts_search_returns_matches_with_snippets" evidence="ET-DET ET-TRACE">
+          <assert>TA-013 emitted; result count > 0 for indexed content</assert>
+        </scenario>
+        <scenario id="M-010-S-002" name="ranking_is_explainable" evidence="ET-SEM">
+          <assert>explain_ranking returns source-to-score mapping with FTS rank</assert>
+        </scenario>
+        <scenario id="M-010-F-001" name="stale_denylist_row_filtered_from_response" evidence="ET-DET ET-TRACE">
+          <assert>TA-014 emitted; denied path absent from SearchResult list</assert>
+        </scenario>
+        <scenario id="M-010-F-002" name="fts_works_when_vector_backend_disabled" evidence="ET-DET" />
+        <scenario id="M-010-F-003" name="search_without_policy_filter_fails" evidence="ET-TRACE" />
+      </row>
+
+      <!-- M-011 ConfigService -->
+      <row module="M-011" test_path="tests/test_config.py">
+        <scenario id="M-011-S-001" name="valid_config_loads_all_sections" evidence="ET-DET" />
+        <scenario id="M-011-S-002" name="sanitized_summary_emitted" evidence="ET-TRACE">
+          <assert>TA-019 emitted without raw secret values</assert>
+        </scenario>
+        <scenario id="M-011-F-001" name="invalid_config_fails_closed" evidence="ET-DET ET-TRACE">
+          <assert>TA-020 emitted; service does not start</assert>
+        </scenario>
+        <scenario id="M-011-F-002" name="missing_required_setting_fails" evidence="ET-DET" />
+        <scenario id="M-011-F-003" name="unsafe_vault_root_rejected" evidence="ET-DET" />
+      </row>
+
+      <!-- M-012 ObservabilityService -->
+      <row module="M-012" test_path="tests/test_observability.py">
+        <scenario id="M-012-S-001" name="new_trace_id_is_unique" evidence="ET-DET">
+          <assert>two calls produce different UUIDs</assert>
+        </scenario>
+        <scenario id="M-012-S-002" name="log_trace_anchor_emits_structured_json" evidence="ET-DET">
+          <assert>output is valid JSON with required fields</assert>
+        </scenario>
+        <scenario id="M-012-S-003" name="error_taxonomy_covers_all_known_failure_modes" evidence="ET-DET">
+          <assert>ErrorCode enum has entries for auth, policy, filesystem, patch, revision, audit failures</assert>
+        </scenario>
+        <scenario id="M-012-F-001" name="critical_operations_cannot_emit_logs_without_trace_context" evidence="ET-TRACE">
+          <assert>every log from M-001..M-019 carries trace_id</assert>
+        </scenario>
+      </row>
+
+      <!-- M-013 IndexRepository -->
+      <row module="M-013" test_path="tests/test_index_repo.py">
+        <scenario id="M-013-S-001" name="schema_initializes_with_wal_and_busy_timeout" evidence="ET-DET">
+          <assert>PRAGMA journal_mode=wal; PRAGMA busy_timeout set</assert>
+        </scenario>
+        <scenario id="M-013-S-002" name="upsert_note_index_stores_revision" evidence="ET-DET" />
+        <scenario id="M-013-S-003" name="search_fts_returns_matching_rows" evidence="ET-DET" />
+        <scenario id="M-013-F-001" name="stale_index_state_detectable" evidence="ET-DET">
+          <assert>index_state revision differs from Vault file revision</assert>
+        </scenario>
+      </row>
+
+      <!-- M-014 IndexRefreshService -->
+      <row module="M-014" test_path="tests/test_index_refresh.py">
+        <scenario id="M-014-S-001" name="refresh_paths_updates_affected_notes_only" evidence="ET-DET ET-TRACE">
+          <assert>TA-011 emitted; TA-012 emitted; only passed paths updated</assert>
+        </scenario>
+        <scenario id="M-014-S-002" name="startup_reconcile_detects_external_change" evidence="ET-DET">
+          <assert>file changed outside MCP triggers index update during reconcile</assert>
+        </scenario>
+        <scenario id="M-014-F-001" name="refresh_treats_vault_as_source_of_truth" evidence="ET-DET">
+          <assert>refresh re-reads from M-005, not from cached index state</assert>
+        </scenario>
+      </row>
+
+      <!-- M-015 MarkdownSemanticParser -->
+      <row module="M-015" test_path="tests/test_markdown_parser.py">
+        <scenario id="M-015-S-001" name="parse_extracts_frontmatter_and_metadata" evidence="ET-DET">
+          <assert>tags, title, date extracted correctly</assert>
+        </scenario>
+        <scenario id="M-015-S-002" name="extract_sections_returns_heading_tree" evidence="ET-DET">
+          <assert>sections match ## heading depth; content under correct parent</assert>
+        </scenario>
+        <scenario id="M-015-F-001" name="invalid_markdown_shape_flagged" evidence="ET-DET">
+          <assert>mismatched heading levels or broken frontmatter returns validation error</assert>
+        </scenario>
+        <scenario id="M-015-F-002" name="parser_output_is_stable_across_identical_input" evidence="ET-DET">
+          <assert>same file parsed twice produces identical structure</assert>
+        </scenario>
+      </row>
+
+      <!-- M-016 VectorSearchAdapter -->
+      <row module="M-016" test_path="tests/test_vector_adapter.py">
+        <scenario id="M-016-S-001" name="disabled_mode_has_no_external_dependency" evidence="ET-DET">
+          <assert>create_vector_adapter('disabled') returns noop adapter; no import errors</assert>
+        </scenario>
+        <scenario id="M-016-S-002" name="sqlite_vec_mode_enabled_when_available" evidence="ET-DET" />
+        <scenario id="M-016-F-001" name="vector_failure_degrading_to_fts" evidence="ET-DET ET-TRACE">
+          <assert>TA-013 still emitted without vector results</assert>
+        </scenario>
+      </row>
+
+      <!-- M-017 BackupService -->
+      <row module="M-017" test_path="tests/test_backup_service.py">
+        <scenario id="M-017-S-001" name="manual_backup_snapshot_completed" evidence="ET-TRACE">
+          <assert>TA-016 emitted; git commit created</assert>
+        </scenario>
+        <scenario id="M-017-F-001" name="backup_does_not_mutate_vault_content" evidence="ET-DET">
+          <assert>sha256 of all Vault files unchanged after backup</assert>
+        </scenario>
+        <scenario id="M-017-F-002" name="rollback_api_absent_in_mvp" evidence="ET-DET">
+          <assert>no restore_note_revision in public interface</assert>
+        </scenario>
+      </row>
+
+      <!-- M-018 WikiUpdateService -->
+      <row module="M-018" test_path="tests/test_wiki_update_service.py">
+        <scenario id="M-018-S-001" name="propose_wiki_update_returns_source_linked_diff" evidence="ET-DET ET-TRACE">
+          <assert>TA-015 emitted; diff includes source note references</assert>
+        </scenario>
+        <scenario id="M-018-F-001" name="no_direct_write_to_70_wiki" evidence="ET-DET">
+          <assert>no M-005.write_file_atomic or M-005.move_file_atomic called for 70_Wiki/ paths</assert>
+        </scenario>
+        <scenario id="M-018-F-002" name="no_autonomous_write_call_path_exists" evidence="ET-DET">
+          <assert>call graph shows only propose-only flow for 70_Wiki</assert>
+        </scenario>
+      </row>
+
+      <!-- M-019 DraftPromotionService -->
+      <row module="M-019" test_path="tests/test_draft_promotion_service.py">
+        <scenario id="M-019-S-001" name="promote_single_note_from_inbox_to_memory" evidence="ET-DET ET-TRACE">
+          <assert>file moved; TA-002 TA-005 TA-008 TA-010 emitted</assert>
+        </scenario>
+        <scenario id="M-019-F-001" name="promote_to_existing_target_rejected" evidence="ET-DET">
+          <assert>overwrite=false enforced</assert>
+        </scenario>
+        <scenario id="M-019-F-002" name="bulk_move_rejected" evidence="ET-DET" />
+        <scenario id="M-019-F-003" name="readonly_agent_promotion_rejected" evidence="ET-DET" />
+        <scenario id="M-019-F-004" name="promote_to_denylisted_folder_rejected" evidence="ET-DET" />
+      </row>
+      <row module="M-020" test_path="tests/test_transport.py">
+        <scenario id="M-020-S-001" name="jsonrpc_initialize_returns_capabilities" evidence="ET-DET" />
+        <scenario id="M-020-S-002" name="tools_list_returns_all_12_tools" evidence="ET-DET" />
+        <scenario id="M-020-S-003" name="tools_call_routes_to_server_handler" evidence="ET-INT" />
+        <scenario id="M-020-S-004" name="health_endpoint_returns_modules" evidence="ET-DET" />
+        <scenario id="M-020-F-001" name="bearer_auth_passed_to_server" evidence="ET-DET" />
+        <scenario id="M-020-F-002" name="invalid_json_returns_parse_error" evidence="ET-DET" />
+      </row>
+    </module_matrix>
+
+    <!-- Flow-level matrix: 6 flows × scenarios -->
+    <flow_matrix>
+      <row flow="DF-001" name="SafeRead">
+        <scenario ref="VF-DF-001-S-001" evidence="ET-INT ET-TRACE">
+          <assert>end-to-end: MCP client→M-001→M-002→M-003→M-004→M-005; TA-001 TA-002 present; content+revision returned</assert>
+        </scenario>
+        <scenario ref="VF-DF-001-F-001" evidence="ET-INT ET-TRACE">
+          <assert>denylisted path rejected before M-005 read; TA-002b emitted</assert>
+        </scenario>
+        <scenario ref="VF-DF-001-F-002" evidence="ET-INT ET-DET">
+          <assert>symlink path rejected; TA-018 emitted</assert>
+        </scenario>
+      </row>
+
+      <row flow="DF-002" name="SafeMutation">
+        <scenario ref="VF-DF-002-S-001" evidence="ET-INT ET-TRACE">
+          <assert>TA-001→TA-002→TA-003→TA-004→TA-005→TA-006→TA-007→TA-008→TA-009→TA-010 in sequence</assert>
+        </scenario>
+        <scenario ref="VF-DF-002-S-002" evidence="ET-INT ET-DET">
+          <assert>replace_exact_block succeeds only with matching expected_revision</assert>
+        </scenario>
+        <scenario ref="VF-DF-002-F-001" evidence="ET-INT ET-DET">
+          <assert>edit without dry_run rejected</assert>
+        </scenario>
+        <scenario ref="VF-DF-002-F-002" evidence="ET-INT ET-TRACE">
+          <assert>TA-006b emitted; MutationResult.conflict=true; file unchanged</assert>
+        </scenario>
+        <scenario ref="VF-DF-002-F-003" evidence="ET-INT ET-DET">
+          <assert>free_form_regex_patch rejected; TA-004b emitted</assert>
+        </scenario>
+      </row>
+
+      <row flow="DF-003" name="RetrievalSearch">
+        <scenario ref="VF-DF-003-S-001" evidence="ET-INT ET-TRACE">
+          <assert>TA-001→TA-002→TA-013; result count matches; no denied paths returned</assert>
+        </scenario>
+        <scenario ref="VF-DF-003-F-001" evidence="ET-INT ET-TRACE">
+          <assert>TA-014 emitted; denied path absent from result; FTS results still returned</assert>
+        </scenario>
+        <scenario ref="VF-DF-003-F-002" evidence="ET-INT ET-DET">
+          <assert>vector_mode=disabled; search_notes still returns FTS results</assert>
+        </scenario>
+      </row>
+
+      <row flow="DF-004" name="IndexRefreshFromMutationResult">
+        <scenario ref="VF-DF-004-S-001" evidence="ET-INT ET-TRACE">
+          <assert>TA-010 from mutation→M-001→M-014.refresh_paths; TA-011→TA-012</assert>
+        </scenario>
+        <scenario ref="VF-DF-004-S-002" evidence="ET-INT ET-DET">
+          <assert>simulated external file change detected by startup_reconcile</assert>
+        </scenario>
+        <scenario ref="VF-DF-004-F-001" evidence="ET-INT ET-DET">
+          <assert>static import check: M-008 does not import M-014 (SC-002)</assert>
+        </scenario>
+      </row>
+
+      <row flow="DF-005" name="WikiProposeOnlyUpdate">
+        <scenario ref="VF-DF-005-S-001" evidence="ET-INT ET-TRACE">
+          <assert>TA-002→TA-013→TA-015; diff includes sources; 70_Wiki file unchanged</assert>
+        </scenario>
+        <scenario ref="VF-DF-005-F-001" evidence="ET-INT ET-DET">
+          <assert>direct write to 70_Wiki/ rejected; only propose path available</assert>
+        </scenario>
+      </row>
+
+      <row flow="DF-006" name="DraftInboxPromotion">
+        <scenario ref="VF-DF-006-S-001" evidence="ET-INT ET-TRACE">
+          <assert>TA-001→TA-002→TA-005→TA-008→TA-010; file moved from inbox/ to memory/</assert>
+        </scenario>
+        <scenario ref="VF-DF-006-F-001" evidence="ET-INT ET-DET">
+          <assert>promote to existing target returns conflict error</assert>
+        </scenario>
+        <scenario ref="VF-DF-006-F-002" evidence="ET-INT ET-DET">
+          <assert>bulk move request rejected</assert>
+        </scenario>
+        <scenario ref="VF-DF-006-F-003" evidence="ET-INT ET-DET">
+          <assert>readonly agent promote rejected</assert>
+        </scenario>
+      </row>
+    </flow_matrix>
+  </VerificationMatrix>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- MODULE VERIFICATION ENTRIES — per-module checks and gates       -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <ModuleVerification id="MODULE-VERIFICATION-001">
+    <ModuleCheck id="V-M-001" module_ref="M-001" target_path="src/memory_mcp/server.py" test_path="tests/test_server.py">
+      <checks>Tool routing applies auth/policy before services; calls M-014 only after affected_paths result; emits trace_id.</checks>
+      <local_gate>All registered tools have policy profile coverage.</local_gate>
+      <required_markers>request.received, request.completed, request.failed</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_server.py -v --timeout=30</command>
+        <command name="typecheck">mypy src/memory_mcp/server.py</command>
+        <command name="lint">ruff check src/memory_mcp/server.py</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-002" module_ref="M-002" target_path="src/memory_mcp/auth.py" test_path="tests/test_auth.py">
+      <checks>Valid identity accepted; invalid key rejected; profile resolved; secrets not logged.</checks>
+      <local_gate>Unknown API key cannot reach policy or service layer.</local_gate>
+      <required_markers>auth.identity.resolved, auth.identity.rejected</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_auth.py -v --timeout=30</command>
+        <command name="typecheck">mypy src/memory_mcp/auth.py</command>
+        <command name="lint">ruff check src/memory_mcp/auth.py</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-003" module_ref="M-003" target_path="src/memory_mcp/policy.py" test_path="tests/test_policy.py">
+      <checks>Allowlist, denylist, propose-only, dry-run, no-delete, no-bulk and symlink-deny enforced.</checks>
+      <local_gate>Policy matrix covers every MCP tool and profile.</local_gate>
+      <required_markers>policy.decision, policy.denied</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_policy.py -v --timeout=30</command>
+        <command name="typecheck">mypy src/memory_mcp/policy.py</command>
+        <command name="lint">ruff check src/memory_mcp/policy.py</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-004" module_ref="M-004" target_path="src/memory_mcp/read_service.py" test_path="tests/test_read_service.py">
+      <checks>Read returns content plus sha256(content) revision and never exposes denied paths.</checks>
+      <local_gate>Read cannot call filesystem before policy approval.</local_gate>
+      <required_markers>path.resolved</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_read_service.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-005" module_ref="M-005" target_path="src/memory_mcp/vault_fs.py" test_path="tests/test_vault_fs.py">
+      <checks>Path traversal blocked; any symlink component denied; atomic write semantics verified.</checks>
+      <local_gate>Resolved path always remains under Vault root.</local_gate>
+      <required_markers>path.resolved, path.denied, vault.atomic_write.completed</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_vault_fs.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-006" module_ref="M-006" target_path="src/memory_mcp/change_planner.py" test_path="tests/test_change_planner.py">
+      <checks>Dry-run diff stable; constrained patch validation; post-apply validation.</checks>
+      <local_gate>Unconstrained regex/LLM patches are rejected.</local_gate>
+      <required_markers>change.plan.created, patch.validation.completed, patch.validation.failed</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_change_planner.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-007" module_ref="M-007" target_path="src/memory_mcp/concurrency.py" test_path="tests/test_concurrency.py">
+      <checks>Process and filesystem locks; stale revision rejected after external sync change.</checks>
+      <local_gate>No write can proceed after revision mismatch.</local_gate>
+      <required_markers>lock.acquired, revision.rechecked, revision.mismatch</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_concurrency.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-008" module_ref="M-008" target_path="src/memory_mcp/mutation_service.py" test_path="tests/test_mutation_service.py">
+      <checks>Create/append/edit/write use same pipeline; returns affected_paths; never calls M-014.</checks>
+      <local_gate>Static or contract check proves no M-014 dependency.</local_gate>
+      <required_markers>mutation.affected_paths.returned</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_mutation_service.py -v --timeout=60</command>
+        <command name="static_import_check">python -c "import ast, sys; ..." # verify M-008 does not import M-014</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-009" module_ref="M-009" target_path="src/memory_mcp/audit_log.py" test_path="tests/test_audit_log.py">
+      <checks>Authoritative audit event written; LOG.md projection generated; no recursive audit loop.</checks>
+      <local_gate>Mutation without audit event is impossible or fails.</local_gate>
+      <required_markers>audit.authoritative_event.appended, audit.log_projection.updated</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_audit_log.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-010" module_ref="M-010" target_path="src/memory_mcp/retrieval_service.py" test_path="tests/test_retrieval_service.py">
+      <checks>Search filters denied paths; FTS works without vector backend; ranking explainable.</checks>
+      <local_gate>Denylisted stale index row does not reach response.</local_gate>
+      <required_markers>retrieval.query.completed, retrieval.denied_path.filtered</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_retrieval_service.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-011" module_ref="M-011" target_path="src/memory_mcp/config.py" test_path="tests/test_config.py">
+      <checks>Config loads transport, policy, audit, index and external sync settings.</checks>
+      <local_gate>Invalid or unsafe config fails closed.</local_gate>
+      <required_markers>config.loaded, config.invalid</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_config.py -v --timeout=15</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-012" module_ref="M-012" target_path="src/memory_mcp/observability.py" test_path="tests/test_observability.py">
+      <checks>Trace ids and error taxonomy present on critical flows.</checks>
+      <local_gate>Critical operations cannot emit logs without trace context.</local_gate>
+      <module_commands>
+        <command name="unit">pytest tests/test_observability.py -v --timeout=15</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-013" module_ref="M-013" target_path="src/memory_mcp/index_repo.py" test_path="tests/test_index_repo.py">
+      <checks>SQLite FTS5 schema and WAL mode; index state tracks revision/content hash.</checks>
+      <local_gate>WAL mode and busy_timeout are asserted in tests.</local_gate>
+      <required_markers>index.schema.ready, index.fts.query.completed</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_index_repo.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-014" module_ref="M-014" target_path="src/memory_mcp/index_refresh.py" test_path="tests/test_index_refresh.py">
+      <checks>refresh_paths handles affected_paths; startup reconcile detects external changes.</checks>
+      <local_gate>Refresh treats Vault files as source of truth.</local_gate>
+      <required_markers>index.refresh.started, index.refresh.completed</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_index_refresh.py -v --timeout=60</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-015" module_ref="M-015" target_path="src/memory_mcp/markdown_parser.py" test_path="tests/test_markdown_parser.py">
+      <checks>Frontmatter, tags, headings and sections parsed; invalid markdown shapes rejected when required.</checks>
+      <local_gate>Parser output is stable for indexing and patch validation fixtures.</local_gate>
+      <module_commands>
+        <command name="unit">pytest tests/test_markdown_parser.py -v --timeout=15</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-016" module_ref="M-016" target_path="src/memory_mcp/vector_adapter.py" test_path="tests/test_vector_adapter.py">
+      <checks>disabled/sqlite_vec/qdrant_optional modes; vector failure degrades to FTS.</checks>
+      <local_gate>Disabled mode has no external dependency.</local_gate>
+      <module_commands>
+        <command name="unit">pytest tests/test_vector_adapter.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-017" module_ref="M-017" target_path="src/memory_mcp/backup_service.py" test_path="tests/test_backup_service.py">
+      <checks>Manual Git backup does not mutate Vault content; excludes denylisted secrets if configured.</checks>
+      <local_gate>Rollback API is absent in MVP surface.</local_gate>
+      <required_markers>backup.snapshot.completed</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_backup_service.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-018" module_ref="M-018" target_path="src/memory_mcp/wiki_update_service.py" test_path="tests/test_wiki_update_service.py">
+      <checks>70_Wiki update remains propose-only and produces source-linked diffs.</checks>
+      <local_gate>No autonomous write call path exists for 70_Wiki.</local_gate>
+      <required_markers>wiki.diff.generated</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_wiki_update_service.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-019" module_ref="M-019" target_path="src/memory_mcp/draft_promotion_service.py" test_path="tests/test_draft_promotion_service.py">
+      <checks>Promote/move is single-file only, trusted-only, dry-run required, no overwrite.</checks>
+      <local_gate>Bulk move and overwrite target are rejected.</local_gate>
+      <module_commands>
+        <command name="unit">pytest tests/test_draft_promotion_service.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+
+    <ModuleCheck id="V-M-020" module_ref="M-020" target_path="src/memory_mcp/transport.py" test_path="tests/test_transport.py">
+      <checks>JSON-RPC 2.0 parse errors handled; MCP initialize/tools/list/tools/call methods routed; Bearer token extracted; health endpoint returns modules.</checks>
+      <local_gate>Unknown methods return method-not-found; empty body returns invalid request.</local_gate>
+      <required_markers>transport.starting</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_transport.py -v --timeout=30</command>
+        <command name="typecheck">mypy src/memory_mcp/transport.py</command>
+        <command name="lint">ruff check src/memory_mcp/transport.py</command>
+      </module_commands>
+    </ModuleCheck>
+  </ModuleVerification>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- CRITICAL FLOW VERIFICATIONS — integration-level scenarios        -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <CriticalFlows id="CRITICAL-FLOWS-001">
+    <FlowVerification id="VF-DF-001" flow_ref="DF-001" name="SafeRead">
+      <must_verify>auth, policy filtering, symlink denial, revision metadata</must_verify>
+      <success_scenario id="VF-DF-001-S-001">Allowed memory note returns content, metadata and sha256(content) revision.</success_scenario>
+      <failure_scenario id="VF-DF-001-F-001">Denylisted path private/secret.md is rejected before file content is read.</failure_scenario>
+      <failure_scenario id="VF-DF-001-F-002">Symlink path or parent symlink is rejected.</failure_scenario>
+      <required_trace>TA-001 TA-002</required_trace>
+      <forbidden_trace>path.denied (on success), file read before TA-002</forbidden_trace>
+    </FlowVerification>
+
+    <FlowVerification id="VF-DF-002" flow_ref="DF-002" name="SafeMutation">
+      <must_verify>dry-run, constrained patch, lock, external sync recheck, atomic write, audit, affected_paths</must_verify>
+      <success_scenario id="VF-DF-002-S-001">append_note succeeds, audit event is written, LOG.md projection is updated and affected_paths contains changed note.</success_scenario>
+      <success_scenario id="VF-DF-002-S-002">edit_note with replace_exact_block succeeds only when expected_revision matches current sha256(content).</success_scenario>
+      <failure_scenario id="VF-DF-002-F-001">edit_note without dry_run is rejected.</failure_scenario>
+      <failure_scenario id="VF-DF-002-F-002">External sync changes file between plan and write; mutation returns conflict and does not overwrite.</failure_scenario>
+      <failure_scenario id="VF-DF-002-F-003">Free-form regex patch is rejected.</failure_scenario>
+      <required_trace>TA-001 TA-002 TA-003 TA-004 TA-005 TA-006 TA-007 TA-008 TA-009 TA-010</required_trace>
+      <forbidden_trace>TA-011 directly after TA-010 from M-008 (must go through M-001)</forbidden_trace>
+    </FlowVerification>
+
+    <FlowVerification id="VF-DF-003" flow_ref="DF-003" name="RetrievalSearch">
+      <must_verify>denylist not leaked, FTS correctness, explainable ranking, stale index filtering</must_verify>
+      <success_scenario id="VF-DF-003-S-001">search_notes returns FTS matches with source snippets and ranking explanation.</success_scenario>
+      <failure_scenario id="VF-DF-003-F-001">Stale index row for secrets/ is filtered from response.</failure_scenario>
+      <failure_scenario id="VF-DF-003-F-002">Vector backend disabled still returns FTS results.</failure_scenario>
+      <required_trace>TA-001 TA-002 TA-013 TA-014</required_trace>
+    </FlowVerification>
+
+    <FlowVerification id="VF-DF-004" flow_ref="DF-004" name="IndexRefreshFromMutationResult">
+      <must_verify>mutation does not call M-014 directly, incremental refresh correctness, startup reconcile</must_verify>
+      <success_scenario id="VF-DF-004-S-001">M-001 receives affected_paths and calls refresh_paths after mutation result.</success_scenario>
+      <success_scenario id="VF-DF-004-S-002">startup_reconcile detects externally changed file and updates index_state.</success_scenario>
+      <failure_scenario id="VF-DF-004-F-001">Any direct M-008 to M-014 dependency fails architecture verification.</failure_scenario>
+      <required_trace>TA-010 TA-011 TA-012</required_trace>
+      <forbidden_trace>TA-011 immediately following TA-010 in same call stack without M-001 mediation</forbidden_trace>
+    </FlowVerification>
+
+    <FlowVerification id="VF-DF-005" flow_ref="DF-005" name="WikiProposeOnlyUpdate">
+      <must_verify>source traceability, diff generation, no autonomous 70_Wiki write</must_verify>
+      <success_scenario id="VF-DF-005-S-001">propose_wiki_update returns source-linked diff and does not modify 70_Wiki file.</success_scenario>
+      <failure_scenario id="VF-DF-005-F-001">Direct write to 70_Wiki is rejected by policy.</failure_scenario>
+      <required_trace>TA-002 TA-013 TA-015</required_trace>
+      <forbidden_trace>TA-007 for any 70_Wiki/ path</forbidden_trace>
+    </FlowVerification>
+
+    <FlowVerification id="VF-DF-006" flow_ref="DF-006" name="DraftInboxPromotion">
+      <must_verify>trusted profile, dry-run, no overwrite, no bulk move, audit</must_verify>
+      <success_scenario id="VF-DF-006-S-001">trusted_writer promotes one note from inbox/ to memory/ with dry-run and no overwrite.</success_scenario>
+      <failure_scenario id="VF-DF-006-F-001">Promotion to existing target is rejected.</failure_scenario>
+      <failure_scenario id="VF-DF-006-F-002">Bulk move request is rejected.</failure_scenario>
+      <failure_scenario id="VF-DF-006-F-003">readonly_agent promotion is rejected.</failure_scenario>
+      <required_trace>TA-001 TA-002 TA-005 TA-008 TA-010</required_trace>
+    </FlowVerification>
+  </CriticalFlows>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- PHASE GATES — Verification required before phase advancement    -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <PhaseGates id="PHASE-GATES-001">
+    <PhaseGate id="PG-001" phase_ref="PH-001" name="FoundationAndPolicy">
+      <requires>V-M-011 V-M-012 V-M-002 V-M-003 V-M-005 pass.</requires>
+      <evidence>Config fixtures, auth matrix, policy matrix, path traversal and symlink tests.</evidence>
+      <gate_commands>
+        <command name="full_suite">pytest tests/test_config.py tests/test_observability.py tests/test_auth.py tests/test_policy.py tests/test_vault_fs.py -v --timeout=120</command>
+        <command name="typecheck">mypy src/memory_mcp/config.py src/memory_mcp/observability.py src/memory_mcp/auth.py src/memory_mcp/policy.py src/memory_mcp/vault_fs.py</command>
+        <command name="lint">ruff check src/memory_mcp/config.py src/memory_mcp/observability.py src/memory_mcp/auth.py src/memory_mcp/policy.py src/memory_mcp/vault_fs.py</command>
+      </gate_commands>
+      <autonomy_gate>PG-001 passes → Foundation phase is safe for worker-loop execution.</autonomy_gate>
+    </PhaseGate>
+
+    <PhaseGate id="PG-002" phase_ref="PH-002" name="ReadOnlyMCP">
+      <requires>V-M-001 V-M-004 and VF-DF-001 pass.</requires>
+      <evidence>Read-only MCP contract tests over allowed and denied paths.</evidence>
+      <gate_commands>
+        <command name="unit">pytest tests/test_server.py tests/test_read_service.py -v --timeout=60</command>
+        <command name="integration">pytest tests/test_server.py -k "SafeRead" -v --timeout=30</command>
+      </gate_commands>
+    </PhaseGate>
+
+    <PhaseGate id="PG-003" phase_ref="PH-003" name="SafeMutationPipeline">
+      <requires>V-M-007 V-M-006 V-M-009 V-M-008 and VF-DF-002 pass.</requires>
+      <evidence>Mutation dry-run, conflict, audit and affected_paths tests.</evidence>
+      <gate_commands>
+        <command name="unit">pytest tests/test_concurrency.py tests/test_change_planner.py tests/test_audit_log.py tests/test_mutation_service.py -v --timeout=120</command>
+        <command name="integration">pytest tests/test_mutation_service.py -k "SafeMutation" --capture=log -v --timeout=60</command>
+        <command name="static_import_check">static analysis: M-008 does not import M-014</command>
+      </gate_commands>
+    </PhaseGate>
+
+    <PhaseGate id="PG-004" phase_ref="PH-004" name="SQLiteFTSRetrieval">
+      <requires>V-M-015 V-M-013 V-M-014 V-M-010 and VF-DF-003/VF-DF-004 pass.</requires>
+      <evidence>FTS indexing, startup reconcile, stale denylist filtering and no M-008→M-014 dependency check.</evidence>
+      <gate_commands>
+        <command name="unit">pytest tests/test_markdown_parser.py tests/test_index_repo.py tests/test_index_refresh.py tests/test_retrieval_service.py -v --timeout=120</command>
+        <command name="integration">pytest tests/ -k "DF_003 or DF_004" --capture=log -v --timeout=60</command>
+      </gate_commands>
+    </PhaseGate>
+
+    <PhaseGate id="PG-005" phase_ref="PH-005" name="PromotionBackupAndOps">
+      <requires>V-M-019 V-M-017 and VF-DF-006 pass.</requires>
+      <evidence>Single promotion, no-overwrite, backup health and rollback absence tests.</evidence>
+      <gate_commands>
+        <command name="unit">pytest tests/test_draft_promotion_service.py tests/test_backup_service.py -v --timeout=60</command>
+        <command name="integration">pytest tests/ -k "DF_006" -v --timeout=30</command>
+      </gate_commands>
+    </PhaseGate>
+
+    <PhaseGate id="PG-006" phase_ref="PH-006" name="WikiProposeOnlyAutomation">
+      <requires>V-M-018 and VF-DF-005 pass.</requires>
+      <evidence>Wiki proposal diff and no direct 70_Wiki write proof.</evidence>
+      <gate_commands>
+        <command name="unit">pytest tests/test_wiki_update_service.py -v --timeout=30</command>
+        <command name="integration">pytest tests/ -k "DF_005" -v --timeout=30</command>
+      </gate_commands>
+    </PhaseGate>
+
+    <PhaseGate id="PG-007" phase_ref="PH-007" name="OptionalSemanticRetrieval">
+      <requires>V-M-016 and extended V-M-010 pass.</requires>
+      <evidence>Disabled vector mode, sqlite_vec mode contract and FTS fallback tests.</evidence>
+      <gate_commands>
+        <command name="unit">pytest tests/test_vector_adapter.py tests/test_retrieval_service.py -v --timeout=60</command>
+      </gate_commands>
+    </PhaseGate>
+  </PhaseGates>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- STOP CONDITIONS — Immediate implementation halt triggers         -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <StopConditions id="STOP-CONDITIONS-001">
+    <StopCondition id="SC-001">
+      <condition>Any write path bypasses M-003 VaultPolicyGuard or M-006 ChangePlanner.</condition>
+      <detection>Call-graph trace missing TA-002 or TA-004 before TA-007.</detection>
+      <action>Stop implementation and replan mutation boundary.</action>
+    </StopCondition>
+    <StopCondition id="SC-002">
+      <condition>M-008 VaultMutationService directly calls M-014 IndexRefreshService.</condition>
+      <detection>Static import check: M-008 import graph contains M-014.</detection>
+      <action>Stop and restore affected_paths coupling.</action>
+    </StopCondition>
+    <StopCondition id="SC-003">
+      <condition>Concurrent write or external sync test can silently overwrite a newer content hash.</condition>
+      <detection>TA-006b never emitted but file changed; or write succeeds with mismatched revision.</detection>
+      <action>Stop and redesign lock/revision behavior.</action>
+    </StopCondition>
+    <StopCondition id="SC-004">
+      <condition>Any retrieval response exposes denylisted content or metadata.</condition>
+      <detection>SearchResult contains path from denylist without TA-014 emitted.</detection>
+      <action>Stop and redesign indexing/query response filtering.</action>
+    </StopCondition>
+    <StopCondition id="SC-005">
+      <condition>Any symlink path or parent component is accepted in MVP.</condition>
+      <detection>TA-018 never emitted for symlink test fixture.</detection>
+      <action>Stop and tighten path resolution.</action>
+    </StopCondition>
+    <StopCondition id="SC-006">
+      <condition>Wiki update mutates 70_Wiki without propose-only diff review.</condition>
+      <detection>TA-007 emitted for 70_Wiki/ path.</detection>
+      <action>Stop and tighten WikiUpdateService contract.</action>
+    </StopCondition>
+    <StopCondition id="SC-007">
+      <condition>Index is treated as source of truth instead of rebuildable derivative.</condition>
+      <detection>Search or refresh reads from index without verifying against Vault content.</detection>
+      <action>Stop and reassert Vault-first architecture.</action>
+    </StopCondition>
+  </StopConditions>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- FAILURE PACKET — canonical handoff format for verification fails -->
+  <!-- (since docs/operational-packets.xml does not exist)              -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <FailurePacket id="FAIL-PACKET-001">
+    <description>When verification fails, produce a packet with these fields so another agent can continue without guessing.</description>
+    <fields>
+      <field name="contract_ref" required="true">Module contract or flow ref that failed (e.g., M-003, VF-DF-002)</field>
+      <field name="scenario_ref" required="true">Specific scenario that failed (e.g., M-003-F-001, VF-DF-002-S-001)</field>
+      <field name="expected_evidence" required="true">What the contract/scenario requires (values, markers, behaviors)</field>
+      <field name="observed_evidence" required="true">What actually happened (actual values, actual trace, actual markers)</field>
+      <field name="divergent_module" required="true">First module where divergence occurred (M-xxx)</field>
+      <field name="divergent_function" required="true">First function where divergence occurred</field>
+      <field name="divergent_block" required="false">Semantic block where divergence occurred (if applicable)</field>
+      <field name="trace_id" required="true">Correlation ID for the failed execution</field>
+      <field name="suggested_action" required="true">Concrete next step (e.g., "re-check M-003 denylist regex", "add missing revision recheck in M-007.recheck_revision")</field>
+      <field name="reproduce_command" required="true">Exact command to reproduce the failure</field>
+    </fields>
+    <usage_flow>
+      <step>1. Worker or phase gate runs verification command</step>
+      <step>2. Verification fails → capture trace_id, scenario ref, divergence</step>
+      <step>3. Populate FailurePacket fields</step>
+      <step>4. Hand off to a remediation agent (grace-fix) or to developer with full context</step>
+    </usage_flow>
+  </FailurePacket>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- TEST HARNESS DESIGN — Phase 1 concrete specifications           -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <TestHarnessDesign id="HARNESS-001">
+    <description>Concrete test file structures for Phase 1 (FoundationAndPolicy). Designed for pytest + pytest-asyncio. Every test file is source-adjacent (tests/ mirrors src/memory_mcp/).</description>
+
+    <fixtures>
+      <fixture name="temp_vault_root" scope="function">
+        <desc>Creates isolated tmp_path with subdirs: memory/, inbox/, summaries/, 70_Wiki/, private/, .obsidian/, .git/ and sample .md files.</desc>
+        <yield>Path to temp Vault root</yield>
+      </fixture>
+      <fixture name="temp_sqlite" scope="function">
+        <desc>Creates in-memory SQLite DB with WAL mode. Yields connection; closes after test.</desc>
+      </fixture>
+      <fixture name="sample_config_dict" scope="function">
+        <desc>Returns a valid config dict with all sections populated. Tests mutate individual fields to trigger failure scenarios.</desc>
+      </fixture>
+      <fixture name="log_capture" scope="function">
+        <desc>Caplog fixture configured for structured JSON output capture. Returns list of parsed log entries.</desc>
+      </fixture>
+      <fixture name="trace_assert" scope="function">
+        <desc>Helper that takes caplog records and asserts markers appeared in expected order, forbidden markers absent.</desc>
+      </fixture>
+    </fixtures>
+
+    <test_file_spec file="tests/test_config.py" module="M-011">
+      <scenario name="test_load_valid_config_returns_typed_settings">
+        <given>sample_config_dict with all sections</given>
+        <when>load_config called</when>
+        <then>ServerConfig object with typed fields; TA-019 emitted</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_missing_vault_root_fails_closed">
+        <given>config dict missing vault.root</given>
+        <when>load_config or validate_config called</when>
+        <then>ConfigError raised; TA-020 emitted; service init blocked</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_unsafe_vault_root_rejected">
+        <given>config with vault.root = "/" or "/etc"</given>
+        <when>validate_config called</when>
+        <then>ConfigError; TA-020 emitted</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_secrets_not_present_in_sanitized_log">
+        <given>config with api_keys section</given>
+        <when>config loaded and sanitized summary emitted</when>
+        <then>raw API key values not in log output; only key_id fingerprints</then>
+        <evidence>ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_config_with_invalid_backend_fails">
+        <given>config with vector.backend = "unsupported_backend"</given>
+        <when>validate_config called</when>
+        <then>ConfigError raised</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+    </test_file_spec>
+
+    <test_file_spec file="tests/test_observability.py" module="M-012">
+      <scenario name="test_new_trace_id_is_unique_and_uuid_format">
+        <given>two calls to new_trace_id</given>
+        <when>ids generated</when>
+        <then>ids differ; both valid UUID4</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_log_trace_anchor_emits_structured_json">
+        <given>trace_id, module="TestModule", function="testFn", block="TEST_BLOCK", event="test.event"</given>
+        <when>log_trace_anchor called</when>
+        <then>JSON output with all required fields: timestamp, level, trace_id, module, function, block, event</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_error_codes_cover_auth_policy_fs_patch_revision_audit_failures">
+        <given>ErrorCode enum</given>
+        <when>inspected</when>
+        <then>has entries: AUTH_INVALID_KEY, AUTH_UNKNOWN_KEY, POLICY_DENIED, FS_PATH_TRAVERSAL, FS_SYMLINK_DENIED, PATCH_INVALID, PATCH_UNSUPPORTED, REVISION_MISMATCH, LOCK_TIMEOUT, AUDIT_WRITE_FAILED, INDEX_CORRUPT, CONFIG_INVALID</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_redaction_removes_api_key_from_log">
+        <given>data containing {"api_key": "sk-secret-value-1234"}</given>
+        <when>log helper writes entry</when>
+        <then>log output contains "sk-s...1234" or equivalent redacted form; raw key absent</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+    </test_file_spec>
+
+    <test_file_spec file="tests/test_auth.py" module="M-002">
+      <scenario name="test_valid_api_key_resolves_to_agent_identity">
+        <given>known API key "test-key-readonly-001" mapped to readonly_agent profile</given>
+        <when>resolve_identity("test-key-readonly-001")</when>
+        <then>AgentIdentity(key_id="test-key-...", profile="readonly_agent"); TA-001 emitted</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_invalid_api_key_returns_error_and_emits_rejected">
+        <given>unknown API key "bad-key"</given>
+        <when>resolve_identity("bad-key")</when>
+        <then>AuthError with error_code AUTH_UNKNOWN_KEY; TA-001b emitted</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_api_key_value_never_logged">
+        <given>any API key string</given>
+        <when>resolve_identity process runs (success or failure)</when>
+        <then>captured log output does not contain raw API key; only key_id fingerprint</then>
+        <evidence>ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_all_five_profiles_map_from_config">
+        <given>config with 5 api_key→profile mappings</given>
+        <when>each key resolved</when>
+        <then>returns readonly_agent, trusted_writer, wiki_maintainer, cron_summarizer, admin profiles</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_expired_or_revoked_key_rejected">
+        <given>API key marked revoked in config</given>
+        <when>resolve_identity called</when>
+        <then>AuthError; TA-001b emitted</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+    </test_file_spec>
+
+    <test_file_spec file="tests/test_policy.py" module="M-003">
+      <scenario name="test_allowlisted_memory_path_accepted_for_read">
+        <given>path="memory/note.md", operation="read", profile=readonly_agent</given>
+        <when>authorize_operation called</when>
+        <then>PolicyDecision(allowed=true); TA-002 emitted</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_denylisted_private_path_rejected">
+        <given>path="private/secret.md", operation="read", profile=readonly_agent</given>
+        <when>authorize_operation called</when>
+        <then>PolicyDecision(allowed=false, reason="denylist"); TA-002b emitted</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_delete_operation_rejected_all_profiles">
+        <given>path="memory/note.md", operation="delete"</given>
+        <when>authorize_operation called for each profile</when>
+        <then>PolicyDecision(allowed=false) for all 5 profiles</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_bulk_move_rejected">
+        <given>multiple paths in operation</given>
+        <when>authorize_operation called</when>
+        <then>PolicyDecision(allowed=false, reason="bulk_move_forbidden")</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_70_wiki_direct_write_rejected_even_trusted">
+        <given>path="70_Wiki/SomePage.md", operation="write", profile=trusted_writer</given>
+        <when>authorize_operation called</when>
+        <then>PolicyDecision(allowed=false, reason="propose_only")</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_propose_only_paths_allow_propose_operation">
+        <given>path="70_Wiki/SomePage.md", operation="propose", profile=wiki_maintainer</given>
+        <when>authorize_operation called</when>
+        <then>PolicyDecision(allowed=true)</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_edit_without_dry_run_rejected">
+        <given>path="memory/note.md", operation="edit", dry_run=false</given>
+        <when>authorize_operation called</when>
+        <then>PolicyDecision(allowed=false, reason="dry_run_required")</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_readonly_agent_write_rejected">
+        <given>path="memory/note.md", operation="write", profile=readonly_agent</given>
+        <when>authorize_operation called</when>
+        <then>PolicyDecision(allowed=false, reason="profile_not_permitted")</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_symlink_path_rejected_by_policy">
+        <given>path points to symlink; even before M-005 checks</given>
+        <when>check_path_policy called</when>
+        <then>PolicyDecision(allowed=false, reason="symlinks_forbidden")</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_filter_search_results_removes_denylisted_entries">
+        <given>SearchResults containing "memory/ok.md", "private/secret.md", "inbox/draft.md"</given>
+        <when>filter_search_results called</when>
+        <then>results contain only "memory/ok.md" and "inbox/draft.md"; TA-014 emitted for filtered</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_full_profile_tool_permission_matrix">
+        <given>5 profiles × all MCP tool operations</given>
+        <when>authorize_operation called for each combination</when>
+        <then>matrix matches expected permissions from technology.xml profiles</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+    </test_file_spec>
+
+    <test_file_spec file="tests/test_vault_fs.py" module="M-005">
+      <scenario name="test_normalized_path_stays_under_vault_root">
+        <given>vault_root="/tmp/vault", path="./memory/note.md"</given>
+        <when>resolve_vault_path called</when>
+        <then>resolved = "/tmp/vault/memory/note.md"; TA-017 emitted</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_path_traversal_rejected">
+        <given>vault_root="/tmp/vault", path="../../../etc/passwd"</given>
+        <when>resolve_vault_path called</when>
+        <then>PathTraversalError raised; TA-018 emitted</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_windows_traversal_rejected">
+        <given>vault_root="C:\vault", path="..\windows\system32"</given>
+        <when>resolve_vault_path called (platform-aware)</when>
+        <then>PathTraversalError raised</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_symlink_file_rejected">
+        <given>temp_vault_root with memory/link.md → ../private/secret.md (symlink)</given>
+        <when>resolve_vault_path("memory/link.md")</when>
+        <then>SymlinkDeniedError; TA-018 emitted</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_symlink_parent_component_rejected">
+        <given>memory/ is a symlink → ../other/</given>
+        <when>resolve_vault_path("memory/note.md")</when>
+        <then>SymlinkDeniedError; parent component check fails</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_atomic_write_uses_temp_then_rename">
+        <given>path to write</given>
+        <when>write_file_atomic called</when>
+        <then>temp file created, content written, renamed to target; TA-007 emitted; no partial file visible</then>
+        <evidence>ET-DET ET-TRACE</evidence>
+      </scenario>
+      <scenario name="test_compute_revision_returns_sha256">
+        <given>file with content "hello world\n"</given>
+        <when>compute_revision called</when>
+        <then>returns sha256("hello world\n") hex digest</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+      <scenario name="test_null_byte_in_path_rejected">
+        <given>path containing \0 byte</given>
+        <when>resolve_vault_path called</when>
+        <then>PathValidationError raised</then>
+        <evidence>ET-DET</evidence>
+      </scenario>
+    </test_file_spec>
+  </TestHarnessDesign>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- VERIFICATION LEVEL SPLIT — module / wave / phase                 -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <VerificationLevels id="LEVELS-001">
+    <Level id="VL-MODULE" name="module">
+      <scope>Single module, its own test file, its own dependencies mocked</scope>
+      <commands>typecheck + lint + unit tests (pytest single test file)</commands>
+      <evidence>Deterministic assertions + trace assertions on module-local logs</evidence>
+      <max_duration>30s</max_duration>
+      <trigger>After every code change, pre-commit, worker loop iteration</trigger>
+      <example>pytest tests/test_policy.py -v --timeout=30</example>
+    </Level>
+    <Level id="VL-WAVE" name="wave">
+      <scope>All modules touched in current wave, integration tests for merged surfaces</scope>
+      <commands>pytest on all wave test files + relevant flow integration tests</commands>
+      <evidence>Integration trace assertions checking inter-module marker order</evidence>
+      <max_duration>120s</max_duration>
+      <trigger>After completing a wave of module implementations</trigger>
+      <example>pytest tests/ -k "DF_002" --capture=log -v</example>
+    </Level>
+    <Level id="VL-PHASE" name="phase">
+      <scope>All modules in current and prior phases, full flow verifications</scope>
+      <commands>Full test suite for all implemented phases + autonomy gate check</commands>
+      <evidence>Stop condition validations, full traceability matrix, autonomy readiness report</evidence>
+      <max_duration>300s</max_duration>
+      <trigger>Before marking a phase complete; before enabling autonomous multi-phase execution</trigger>
+      <example>pytest tests/ -v --timeout=300 &amp;&amp; python scripts/check_autonomy_gate.py</example>
+    </Level>
+  </VerificationLevels>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- AUTONOMY READINESS — Assessment and gaps                         -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <AutonomyReadiness id="AUTONOMY-001">
+    <criterion id="AUTO-001" status="MET">
+      <desc>All shared artifacts exist: requirements.xml, technology.xml, development-plan.xml, verification-plan.xml, knowledge-graph.xml.</desc>
+      <status>All five GRACE artifacts present and approved at v1.0+.</status>
+    </criterion>
+
+    <criterion id="AUTO-002" status="MET">
+      <desc>Every M-xxx in development-plan has matching knowledge graph node and V-M-xxx verification entry.</desc>
+      <status>All 19 modules have KG nodes and V-M entries. 1:1:1 mapping verified.</status>
+    </criterion>
+
+    <criterion id="AUTO-003" status="MET">
+      <desc>Every critical flow DF-xxx has verification scenarios and trace anchors.</desc>
+      <status>All 6 flows have VF entries with success+ failure scenarios, required_trace, and forbidden_trace.</status>
+    </criterion>
+
+    <criterion id="AUTO-004" status="MET">
+      <desc>Stop conditions are explicit and referenced from risks or gates.</desc>
+      <status>All 7 stop conditions have detection methods and are referenced from RiskRegister.</status>
+    </criterion>
+
+    <criterion id="AUTO-005" status="MET">
+      <desc>Architecture contains no circular dependencies under forbidden edge constraints.</desc>
+      <status>DAG verified; M-008→M-014 marked forbidden; no cycles detected in 48 edges.</status>
+    </criterion>
+
+    <!-- Implementation-state-dependent criteria -->
+    <criterion id="AUTO-006" status="MET" phase="PH-001+">
+      <desc>Module-local verification commands exist and run in under 30s.</desc>
+      <status_detail>All 19 modules have test files with pytest commands defined in V-M-xxx entries. Module verification gates complete.</status_detail>
+    </criterion>
+
+    <criterion id="AUTO-007" status="MET" phase="PH-001+">
+      <desc>Success AND failure scenarios are covered by tests.</desc>
+      <status_detail>All 19 test files exist and implement deterministic + trace assertions matching the verification matrix scenarios.</status_detail>
+    </criterion>
+
+    <criterion id="AUTO-008" status="MET" phase="PH-001+">
+      <desc>Required trace markers make divergence observable.</desc>
+      <status_detail>ObservabilityService (M-012) implemented. All modules emit structured trace anchors with trace_id per TelemetrySpec.</status_detail>
+    </criterion>
+
+    <criterion id="AUTO-009" status="MET" phase="PH-002+">
+      <desc>Wave-level integration follow-ups exist when local checks are insufficient.</desc>
+      <status_detail>Flow-level verification entries (VF-DF-001 through VF-DF-006) define integration scenarios. Phase gate commands cover integration testing.</status_detail>
+    </criterion>
+
+    <criterion id="AUTO-010" status="MET" phase="PH-001+">
+      <desc>FailurePacket fields are populated when verification fails.</desc>
+      <status_detail>FailurePacket format defined and ready for use when any verification scenario fails.</status_detail>
+    </criterion>
+
+    <overall_assessment>
+      <artifact_readiness>READY — All GRACE artifacts, contracts, flows, trace anchors, stop conditions, and verification matrix exist.</artifact_readiness>
+      <implementation_readiness>IMPLEMENTED — All 20 modules (M-001..M-020) have source files. 19 modules have test files; M-020 transport tests are pending. All 7 implementation phases marked complete in development-plan.xml.</implementation_readiness>
+      <next_milestone>Add module-local tests for M-020 HTTP transport (test_transport.py). Integration tests against real Obsidian vault. Vector backend (sqlite_vec / Qdrant) enablement.</next_milestone>
+      <autonomous_execution_safe>YES — All 12 MCP tools wired in M-001 with auth/policy enforcement. M-001 orchestrates M-014 index refresh after mutation, preserving M-008→M-014 forbidden dependency. Wiki is propose-only. HTTP transport (M-020) provides Streamable JSON-RPC 2.0 endpoint. Env-based API key injection for production secrets.</autonomous_execution_safe>
+    </overall_assessment>
+  </AutonomyReadiness>
+</GRACEVerificationPlan>
