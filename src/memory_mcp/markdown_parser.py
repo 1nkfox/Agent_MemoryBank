@@ -61,17 +61,17 @@ def _parse_frontmatter(raw: str) -> dict[str, Any]:
                 i += 1
                 continue
             if value_raw == "":
-                items: list[str] = []
+                list_items: list[str] = []
                 j = i + 1
                 while j < len(lines):
                     item_match = _YAML_LIST_RE.match(lines[j])
                     if item_match:
-                        items.append(item_match.group(1).strip().rstrip())
+                        list_items.append(item_match.group(1).strip().rstrip())
                         j += 1
                     else:
                         break
-                if items:
-                    result[key] = items
+                if list_items:
+                    result[key] = list_items
                     i = j
                     continue
                 result[key] = ""
