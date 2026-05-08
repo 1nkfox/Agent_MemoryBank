@@ -441,9 +441,9 @@
       <verification_refs>V-M-018 V-M-014 DF-005</verification_refs>
       <rationale>Wiki automation is content-risky and must remain propose-only.</rationale>
     </Phase>
-    <Phase id="PH-007" name="OptionalSemanticRetrieval">
-      <step id="STEP-021" module="M-016">Implement VectorSearchAdapter with disabled/sqlite_vec/qdrant_optional modes.</step>
-      <step id="STEP-022" module="M-010">Extend RetrievalService for hybrid search and similar notes.</step>
+    <Phase id="PH-007" name="OptionalSemanticRetrieval" status="complete" gate="PG-007" gate_passed="true">
+      <step id="STEP-021" module="M-016" status="complete" completed_at="2026-05-08">Implement VectorSearchAdapter with disabled/sqlite_vec/qdrant_optional modes.</step>
+      <step id="STEP-022" module="M-010" status="complete" completed_at="2026-05-08">Extend RetrievalService for hybrid search and similar notes.</step>
       <verification_refs>V-M-016 V-M-010</verification_refs>
       <rationale>Semantic retrieval is useful after MVP but must degrade cleanly to FTS and not become a core reliability dependency.</rationale>
     </Phase>
