@@ -428,10 +428,10 @@
       <verification_refs>V-M-015 V-M-013 V-M-014 V-M-010 DF-003 DF-004</verification_refs>
       <rationale>Reliable MVP search should be local, rebuildable and policy-filtered before semantic retrieval is added.</rationale>
     </Phase>
-    <Phase id="PH-005" name="PromotionBackupAndOps">
-      <step id="STEP-016" module="M-019">Implement DraftPromotionService.</step>
-      <step id="STEP-017" module="M-017">Implement BackupService manual Git backup integration.</step>
-      <step id="STEP-018" module="M-001">Expose health_check and admin tools.</step>
+    <Phase id="PH-005" name="PromotionBackupAndOps" status="complete" gate="PG-005" gate_passed="true">
+      <step id="STEP-016" module="M-019" status="complete" completed_at="2026-05-08">Implement DraftPromotionService.</step>
+      <step id="STEP-017" module="M-017" status="complete" completed_at="2026-05-08">Implement BackupService manual Git backup integration.</step>
+      <step id="STEP-018" module="M-001" status="complete" completed_at="2026-05-08">Expose health_check and admin tools.</step>
       <verification_refs>V-M-019 V-M-017 V-M-001 DF-006</verification_refs>
       <rationale>Promotion and backup are operational risk surfaces and must be verified before wiki and semantic expansion.</rationale>
     </Phase>
