@@ -162,12 +162,27 @@ async def _health_handler(request: web.Request) -> web.Response:
     return web.json_response(health_check(config))
 
 
+def _init_admin_auth_from_config(config: ServerConfig) -> None:
+    admin_username = getattr(config, 'admin_username', '')
+    admin_password_hash = getattr(config, 'admin_password_hash', '')
+    if admin_username and admin_password_hash:
+        from memory_mcp.admin_auth import init_admin_auth
+
+        init_admin_auth(admin_username, admin_password_hash)
+
+
 def create_app(config: ServerConfig) -> web.Application:
     app = web.Application()
     app["config"] = config
 
     app.router.add_post("/message", _message_handler)
     app.router.add_get("/health", _health_handler)
+
+    if getattr(config, 'admin_enabled', False):
+        _init_admin_auth_from_config(config)
+        from memory_mcp.admin_web import create_admin_routes
+
+        create_admin_routes(app, config=config)
 
     return app
 
