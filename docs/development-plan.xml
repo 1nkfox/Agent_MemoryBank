@@ -688,13 +688,13 @@
       <verification_refs>V-M-021 V-M-022 V-M-023 DF-007 DF-008 DF-009 DF-013</verification_refs>
       <rationale>Agents need exact role-aware directory instructions before autonomous writes can be reliable over a user-specific Obsidian Vault.</rationale>
     </Phase>
-    <Phase id="PH-009" name="AdminObservabilityAndDebugUX" status="planned" gate="PG-009" gate_passed="false">
+    <Phase id="PH-009" name="AdminObservabilityAndDebugUX" status="complete" gate="PG-009" gate_passed="true">
       <step id="STEP-027" module="M-025" status="complete" completed_at="2026-05-10">Implement ProcessEventLogService and queryable process_events storage.</step>
       <step id="STEP-028" module="M-026" status="complete" completed_at="2026-05-10">Implement LogReportService with filters and sanitized .log export.</step>
       <step id="STEP-029" module="M-024" status="complete" completed_at="2026-05-10">Implement AdminAuthService with separate login/password sessions.</step>
       <step id="STEP-030" module="M-027" status="complete" completed_at="2026-05-10">Implement AdminDashboardService read-only aggregation.</step>
       <step id="STEP-031" module="M-028" status="complete" completed_at="2026-05-10">Implement AdminWebInterface private dashboard routes.</step>
-      <step id="STEP-032" module="M-020" status="planned">Integrate admin web routes beside transport without weakening private network boundary.</step>
+      <step id="STEP-032" module="M-020" status="complete" completed_at="2026-05-10">Integrate admin web routes beside transport without weakening private network boundary.</step>
       <verification_refs>V-M-024 V-M-025 V-M-026 V-M-027 V-M-028 DF-010 DF-011 DF-012</verification_refs>
       <rationale>Operational visibility must be added after core safety boundaries and must remain read-only to avoid expanding mutation risk.</rationale>
     </Phase>
