@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<GRACEKnowledgeGraph id="KG-ROOT-001" project="ObsidianMemoryMCP" status="approved" version="1.2">
+<GRACEKnowledgeGraph id="KG-ROOT-001" project="AgentMemBank" status="approved" version="1.4" updated_at="2026-05-10T17:00:00+03:00">
   <Metadata id="KG-META-001">
-    <title>Knowledge Graph for Obsidian Memory MCP Server</title>
+    <title>Knowledge Graph for AgentMemBank MCP Server</title>
     <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
-    <approval>Architecture approved by user; graph is authoritative for module navigation.</approval>
+    <approval>Architecture approved by user; Agent UX + Admin Observability extension approved 2026-05-10.</approval>
   </Metadata>
 
   <Concepts id="KG-CONCEPTS-001">
@@ -13,6 +13,8 @@
     <Concept id="C-004" name="WritesArePlanned">Mutations require policy, plan, dry-run, revision recheck and audit.</Concept>
     <Concept id="C-005" name="WikiIsProposeOnly">70_Wiki receives proposals and diffs, not autonomous writes.</Concept>
     <Concept id="C-006" name="AgentsNeverDelete">Delete operations are outside MVP and denied by policy.</Concept>
+    <Concept id="C-007" name="DirectoryContractIsAuthority">Agent-facing Vault folder semantics and write destinations are defined by server-owned Directory Contract, not agent inference.</Concept>
+    <Concept id="C-008" name="AdminObservabilityIsReadOnly">Admin dashboard and .log export are debug surfaces and must not mutate Vault content.</Concept>
   </Concepts>
 
   <Modules id="KG-MODULES-001">
@@ -37,9 +39,115 @@
         <fn-handle_tool_call id="KG-M-001-FN-015" />
         <fn-main id="KG-M-001-FN-016" />
         <fn-whoami id="KG-M-001-FN-017" />
+        <fn-get_instructions id="KG-M-001-FN-018" flow-ref="DF-007" />
+        <fn-membank_init id="KG-M-001-FN-019" flow-ref="DF-009" />
       </PublicInterface>
-      <Contracts>All 13 MCP tools wired. Mutation tools return affected_paths and trigger M-014 index refresh (not M-008). Wiki is propose-only. Must invoke auth+policy before service operations. Transports to M-020.</Contracts>
+      <Contracts>All MCP tools wired. Mutation tools return affected_paths and trigger M-014 index refresh (not M-008). Wiki is propose-only. get_instructions returns role-aware Directory Contract. membank_init is non-destructive and audited. Must invoke auth+policy before service operations. Transports to M-020.</Contracts>
     </M-001>
+
+    <M-021 NAME="InstructionService" TYPE="CORE_LOGIC" verification-ref="V-M-021">
+      <Purpose>Builds role-aware AgentMemBank instructions from identity, policy profile and authoritative Directory Contract.</Purpose>
+      <TargetPath>src/memory_mcp/instruction_service.py</TargetPath>
+      <PublicInterface>
+        <fn-get_instructions id="KG-M-021-FN-001" flow-ref="DF-007" />
+        <fn-compose_directory_guidance id="KG-M-021-FN-002" />
+        <fn-compose_role_guidance id="KG-M-021-FN-003" />
+        <type-InstructionPacket id="KG-M-021-TYPE-001" />
+      </PublicInterface>
+      <Contracts>Must include current role, role capabilities, canonical paths, directory purposes, safe workflows, deprecated aliases and drift warnings without exposing secrets.</Contracts>
+    </M-021>
+
+    <M-022 NAME="VaultLayoutService" TYPE="CORE_LOGIC" verification-ref="V-M-022">
+      <Purpose>Detects Obsidian vault root and resolves authoritative Directory Contract for all agent-facing folders.</Purpose>
+      <TargetPath>src/memory_mcp/vault_layout.py</TargetPath>
+      <PublicInterface>
+        <fn-detect_vault_layout id="KG-M-022-FN-001" flow-ref="DF-008" />
+        <fn-resolve_directory_contract id="KG-M-022-FN-002" />
+        <fn-resolve_destination_for_intent id="KG-M-022-FN-003" flow-ref="DF-013" />
+        <fn-detect_directory_drift id="KG-M-022-FN-004" />
+        <type-DirectoryContract id="KG-M-022-TYPE-001" />
+        <type-DirectoryRule id="KG-M-022-TYPE-002" />
+        <type-DirectoryDriftReport id="KG-M-022-TYPE-003" />
+      </PublicInterface>
+      <Contracts>Initial semantic keys are inbox, memory, summaries, wiki, log and system. Generic capture falls back to canonical inbox; ambiguous structured writes require clarification. Deprecated aliases are denied as write targets by default.</Contracts>
+    </M-022>
+
+    <M-023 NAME="MemBankInitializationService" TYPE="CORE_LOGIC" verification-ref="V-M-023">
+      <Purpose>Safely checks, plans and applies AgentMemBank Directory Contract initialization over an existing Obsidian Vault.</Purpose>
+      <TargetPath>src/memory_mcp/membank_init_service.py</TargetPath>
+      <PublicInterface>
+        <fn-membank_init id="KG-M-023-FN-001" flow-ref="DF-009" />
+        <fn-create_init_plan id="KG-M-023-FN-002" />
+        <fn-apply_init_plan id="KG-M-023-FN-003" />
+        <type-MemBankInitPlan id="KG-M-023-TYPE-001" />
+        <type-MemBankInitResult id="KG-M-023-TYPE-002" />
+      </PublicInterface>
+      <Contracts>Must support check_only, dry_run and apply; apply is idempotent, non-destructive, policy-guarded and audited.</Contracts>
+    </M-023>
+
+    <M-024 NAME="AdminAuthService" TYPE="CORE_LOGIC" verification-ref="V-M-024">
+      <Purpose>Authenticates human admin dashboard sessions using login/password credentials separate from MCP API keys.</Purpose>
+      <TargetPath>src/memory_mcp/admin_auth.py</TargetPath>
+      <PublicInterface>
+        <fn-authenticate_admin id="KG-M-024-FN-001" />
+        <fn-create_admin_session id="KG-M-024-FN-002" />
+        <fn-validate_admin_session id="KG-M-024-FN-003" />
+        <fn-revoke_admin_session id="KG-M-024-FN-004" />
+        <type-AdminSession id="KG-M-024-TYPE-001" />
+      </PublicInterface>
+      <Contracts>Must never log passwords; MCP API keys must not authenticate admin web sessions.</Contracts>
+    </M-024>
+
+    <M-025 NAME="ProcessEventLogService" TYPE="CORE_LOGIC" verification-ref="V-M-025">
+      <Purpose>Records durable structured process events for admin timelines, filtering, report export and trace correlation.</Purpose>
+      <TargetPath>src/memory_mcp/process_event_log.py</TargetPath>
+      <PublicInterface>
+        <fn-record_process_event id="KG-M-025-FN-001" flow-ref="DF-010" />
+        <fn-query_process_events id="KG-M-025-FN-002" />
+        <fn-correlate_by_trace_id id="KG-M-025-FN-003" />
+        <type-ProcessEvent id="KG-M-025-TYPE-001" />
+        <type-ProcessEventFilter id="KG-M-025-TYPE-002" />
+      </PublicInterface>
+      <Contracts>Must record boot, config, auth, MCP, policy, read, mutation, file_change, promotion, index_refresh, sync, backup, init, layout, admin and error events with redaction.</Contracts>
+    </M-025>
+
+    <M-026 NAME="LogReportService" TYPE="CORE_LOGIC" verification-ref="V-M-026">
+      <Purpose>Builds sanitized line-oriented .log reports from process and audit events with filters.</Purpose>
+      <TargetPath>src/memory_mcp/log_report_service.py</TargetPath>
+      <PublicInterface>
+        <fn-build_log_report id="KG-M-026-FN-001" />
+        <fn-export_log_report id="KG-M-026-FN-002" flow-ref="DF-012" />
+        <type-LogReportRequest id="KG-M-026-TYPE-001" />
+        <type-LogReportResult id="KG-M-026-TYPE-002" />
+      </PublicInterface>
+      <Contracts>Must filter by time, severity, category, event_type, agent_id, admin_user, path_prefix, trace_id, status and error_code; reports must be redacted and size-bounded.</Contracts>
+    </M-026>
+
+    <M-027 NAME="AdminDashboardService" TYPE="CORE_LOGIC" verification-ref="V-M-027">
+      <Purpose>Aggregates read-only admin dashboard data for health, timelines, errors, file changes, MCP requests, drift and exports.</Purpose>
+      <TargetPath>src/memory_mcp/admin_dashboard_service.py</TargetPath>
+      <PublicInterface>
+        <fn-get_dashboard_summary id="KG-M-027-FN-001" />
+        <fn-get_recent_events id="KG-M-027-FN-002" />
+        <fn-get_error_timeline id="KG-M-027-FN-003" />
+        <fn-get_process_detail id="KG-M-027-FN-004" />
+        <fn-request_log_export id="KG-M-027-FN-005" />
+        <type-DashboardSummary id="KG-M-027-TYPE-001" />
+      </PublicInterface>
+      <Contracts>Must be read-only, sanitized, session-gated through M-028/M-024 and degrade gracefully if event storage is unavailable.</Contracts>
+    </M-027>
+
+    <M-028 NAME="AdminWebInterface" TYPE="ENTRY_POINT" verification-ref="V-M-028">
+      <Purpose>Provides private read-only admin web pages for login, process timeline, filters and .log export.</Purpose>
+      <TargetPath>src/memory_mcp/admin_web.py</TargetPath>
+      <PublicInterface>
+        <fn-create_admin_routes id="KG-M-028-FN-001" flow-ref="DF-011" />
+        <fn-render_login_page id="KG-M-028-FN-002" />
+        <fn-render_dashboard_page id="KG-M-028-FN-003" />
+        <fn-handle_log_export id="KG-M-028-FN-004" flow-ref="DF-012" />
+      </PublicInterface>
+      <Contracts>Must require admin session, remain private-network scoped and never directly access Vault filesystem or audit internals.</Contracts>
+    </M-028>
 
     <M-002 NAME="AuthIdentityService" TYPE="CORE_LOGIC" verification-ref="V-M-002">
       <Purpose>Resolves agent identity, API key, role and policy profile.</Purpose>
@@ -114,16 +222,18 @@
     </M-007>
 
     <M-008 NAME="VaultMutationService" TYPE="CORE_LOGIC" verification-ref="V-M-008">
-      <Purpose>Executes approved create/append/edit/write operations and returns affected_paths without calling index refresh directly.</Purpose>
+      <Purpose>Executes approved create/append/edit/write operations through ChangePlanner (M-006), returns affected_paths with unified diff, and never calls index refresh directly.</Purpose>
       <TargetPath>src/memory_mcp/mutation_service.py</TargetPath>
       <PublicInterface>
-        <fn-create_note id="KG-M-008-FN-001" />
-        <fn-append_note id="KG-M-008-FN-002" />
-        <fn-edit_note id="KG-M-008-FN-003" />
-        <fn-write_note id="KG-M-008-FN-004" />
-        <type-MutationResult id="KG-M-008-TYPE-001" />
+        <fn-create_note id="KG-M-008-FN-001" diff_required="true" />
+        <fn-append_note id="KG-M-008-FN-002" diff_required="true" />
+        <fn-edit_note id="KG-M-008-FN-003" diff_required="true" />
+        <fn-write_note id="KG-M-008-FN-004" diff_required="true" />
+        <type-MutationResult id="KG-M-008-TYPE-001">
+          <field name="diff" required="true">Unified diff generated by M-006.prepare_change for ALL mutation types.</field>
+        </type-MutationResult>
       </PublicInterface>
-      <Contracts>Must return affected_paths and audit_event_id; must not depend on or directly call M-014.</Contracts>
+      <Contracts>Must return affected_paths, audit_event_id AND diff; must not depend on or directly call M-014; must invoke M-006.prepare_change for ALL operations including create_note and write_note; _authorize_or_raise must forward actual dry_run parameter, never hardcode True.</Contracts>
     </M-008>
 
     <M-009 NAME="AuditLogService" TYPE="CORE_LOGIC" verification-ref="V-M-009">
@@ -296,6 +406,22 @@
     <CrossLink id="XL-042" from="M-001" to="M-018" relation="routes_wiki_proposal_to" bidirectional="true" />
     <CrossLink id="XL-043" from="M-001" to="M-020" relation="delegates_http_transport_to" bidirectional="true" />
     <CrossLink id="XL-044" from="M-020" to="M-001" relation="invokes_tools_via" bidirectional="true" />
+    <CrossLink id="XL-045" from="M-001" to="M-021" relation="routes_get_instructions_to" bidirectional="true" />
+    <CrossLink id="XL-046" from="M-021" to="M-022" relation="uses_directory_contract" bidirectional="true" />
+    <CrossLink id="XL-047" from="M-021" to="M-002" relation="uses_identity_context" bidirectional="true" />
+    <CrossLink id="XL-048" from="M-021" to="M-003" relation="uses_policy_capabilities" bidirectional="true" />
+    <CrossLink id="XL-049" from="M-001" to="M-023" relation="routes_membank_init_to" bidirectional="true" />
+    <CrossLink id="XL-050" from="M-023" to="M-022" relation="uses_layout_report" bidirectional="true" />
+    <CrossLink id="XL-051" from="M-023" to="M-009" relation="records_init_audit" bidirectional="true" />
+    <CrossLink id="XL-052" from="M-025" to="M-013" relation="persists_process_events" bidirectional="true" />
+    <CrossLink id="XL-053" from="M-026" to="M-025" relation="exports_process_events" bidirectional="true" />
+    <CrossLink id="XL-054" from="M-026" to="M-009" relation="correlates_audit_events" bidirectional="true" />
+    <CrossLink id="XL-055" from="M-027" to="M-025" relation="queries_event_timeline" bidirectional="true" />
+    <CrossLink id="XL-056" from="M-027" to="M-026" relation="requests_log_reports" bidirectional="true" />
+    <CrossLink id="XL-057" from="M-028" to="M-024" relation="validates_admin_session" bidirectional="true" />
+    <CrossLink id="XL-058" from="M-028" to="M-027" relation="renders_dashboard_from" bidirectional="true" />
+    <CrossLink id="XL-059" from="M-028" to="M-005" relation="forbidden_direct_filesystem_access" bidirectional="false" forbidden="true" />
+    <CrossLink id="XL-060" from="M-025" to="M-009" relation="forbidden_process_audit_loop" bidirectional="false" forbidden="true" />
   </CrossLinks>
 
   <DataFlowLinks id="KG-FLOW-LINKS-001">
@@ -305,6 +431,13 @@
     <DataFlow id="DF-004" name="IndexRefreshFromMutationResult" modules="M-001 M-014 M-003 M-005 M-015 M-013 M-016" verification_ref="VF-DF-004" />
     <DataFlow id="DF-005" name="WikiProposeOnlyUpdate" modules="M-001 M-010 M-018 M-006" verification_ref="VF-DF-005" />
     <DataFlow id="DF-006" name="DraftInboxPromotion" modules="M-001 M-002 M-003 M-019 M-007 M-005 M-009" verification_ref="VF-DF-006" />
+    <DataFlow id="DF-007" name="AgentInstructionBootstrap" modules="M-001 M-002 M-003 M-022 M-021" verification_ref="VF-DF-007" />
+    <DataFlow id="DF-008" name="ObsidianVaultDetection" modules="M-011 M-022 M-005" verification_ref="VF-DF-008" />
+    <DataFlow id="DF-009" name="MemBankInitialization" modules="M-001 M-002 M-003 M-023 M-022 M-005 M-009" verification_ref="VF-DF-009" />
+    <DataFlow id="DF-010" name="ProcessEventRecording" modules="M-012 M-025 M-013" verification_ref="VF-DF-010" />
+    <DataFlow id="DF-011" name="AdminDashboardAccess" modules="M-028 M-024 M-027 M-025 M-026 M-022 M-014 M-017" verification_ref="VF-DF-011" />
+    <DataFlow id="DF-012" name="LogReportExport" modules="M-028 M-024 M-027 M-026 M-025 M-009" verification_ref="VF-DF-012" />
+    <DataFlow id="DF-013" name="DestinationResolution" modules="M-001 M-003 M-022 M-008" verification_ref="VF-DF-013" />
   </DataFlowLinks>
 
   <PolicyLinks id="KG-POLICY-LINKS-001">
@@ -313,6 +446,8 @@
     <PolicyLink id="KG-POL-003" concept_ref="C-003" enforced_by="M-005 M-007" used_by="M-004 M-006 M-008 M-013 M-014" />
     <PolicyLink id="KG-POL-004" concept_ref="C-005" enforced_by="M-003 M-018" used_by="M-001" />
     <PolicyLink id="KG-POL-005" concept_ref="C-006" enforced_by="M-003" used_by="M-001 M-008 M-019" />
+    <PolicyLink id="KG-POL-006" concept_ref="C-007" enforced_by="M-022 M-003" used_by="M-001 M-021 M-023 M-008" />
+    <PolicyLink id="KG-POL-007" concept_ref="C-008" enforced_by="M-024 M-027 M-028" used_by="M-025 M-026" />
   </PolicyLinks>
 
   <GraphIntegrity id="KG-INTEGRITY-001">
@@ -320,5 +455,7 @@
     <constraint id="KG-CONS-002">Every public interface annotation is public contract only; private helpers are intentionally excluded.</constraint>
     <constraint id="KG-CONS-003">Forbidden direct dependency M-008 -> M-014 must remain absent in implementation.</constraint>
     <constraint id="KG-CONS-004">CrossLinks are navigational and do not override the dependency DAG in development-plan.xml.</constraint>
+    <constraint id="KG-CONS-005">Directory Contract nodes must cover all agent-facing write destinations before get_instructions is considered complete.</constraint>
+    <constraint id="KG-CONS-006">Admin dashboard nodes must remain read-only and must not bypass service aggregation to access Vault filesystem.</constraint>
   </GraphIntegrity>
 </GRACEKnowledgeGraph>

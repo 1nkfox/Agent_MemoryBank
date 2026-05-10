@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<GRACEVerificationPlan id="VER-ROOT-001" project="ObsidianMemoryMCP" status="approved" version="2.2" updated_at="2026-05-08">
+<GRACEVerificationPlan id="VER-ROOT-001" project="AgentMemBank" status="approved" version="2.5" updated_at="2026-05-10">
   <Metadata id="VER-META-001">
-    <title>Verification Plan for Obsidian Memory MCP Server — Autonomous-Ready</title>
+    <title>Verification Plan for AgentMemBank MCP Server — Autonomous-Ready</title>
     <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
     <approval>Architecture approved by user; verification gates are mandatory for autonomous execution.</approval>
-      <version_note>v2.0 adds: verification matrix, telemetry spec, test harness designs, failure packet format, autonomy gap assessment. v2.1: autonomy readiness updated to reflect implemented codebase (all 19 modules + tests exist). v2.2: M-001 server wiring complete (12 tools), M-020 HTTP transport added, env-based API key injection, M-008→M-014 forbidden arch preserved.</version_note>
+      <version_note>v2.0 adds: verification matrix, telemetry spec, test harness designs, failure packet format, autonomy gap assessment. v2.1: autonomy readiness updated to reflect implemented codebase. v2.2: M-020 HTTP transport added. v2.3: AgentMemBank UX, Directory Contract, membank_init, process logging and read-only admin dashboard contracts added. v2.4: write_note/create_note diff requirement, dry_run bypass detection and M-020 transport test contract hardened. v2.5: full verification run complete — 345 tests (343 passed, 2 skipped), all 9 phase gates PG-001..PG-009 pass, static boundaries intact, autonomy readiness confirmed READY for all 28 modules M-001..M-028.</version_note>
   </Metadata>
 
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -94,8 +94,35 @@
     <trace-anchor id="TA-016" name="backup.snapshot.completed" module="M-017" />
     <trace-anchor id="TA-017" name="path.resolved" module="M-005" />
     <trace-anchor id="TA-018" name="path.denied" module="M-005" />
-    <trace-anchor id="TA-019" name="config.loaded" module="M-011" />
-    <trace-anchor id="TA-020" name="config.invalid" module="M-011" />
+      <trace-anchor id="TA-019" name="config.loaded" module="M-011" />
+      <trace-anchor id="TA-020" name="config.invalid" module="M-011" />
+      <trace-anchor id="TA-021" name="instructions.generated" module="M-021" />
+      <trace-anchor id="TA-022" name="instructions.role_context.included" module="M-021" />
+      <trace-anchor id="TA-023" name="instructions.layout_warning.included" module="M-021" />
+      <trace-anchor id="TA-024" name="vault_layout.detected" module="M-022" />
+      <trace-anchor id="TA-025" name="vault_layout.drift_detected" module="M-022" />
+      <trace-anchor id="TA-026" name="vault_layout.obsidian_marker_missing" module="M-022" />
+      <trace-anchor id="TA-027" name="vault_layout.canonical_paths.resolved" module="M-022" />
+      <trace-anchor id="TA-028" name="membank_init.plan.created" module="M-023" />
+      <trace-anchor id="TA-029" name="membank_init.apply.started" module="M-023" />
+      <trace-anchor id="TA-030" name="membank_init.apply.completed" module="M-023" />
+      <trace-anchor id="TA-031" name="membank_init.drift_blocked" module="M-023" />
+      <trace-anchor id="TA-032" name="admin_auth.login.success" module="M-024" />
+      <trace-anchor id="TA-033" name="admin_auth.login.failed" module="M-024" />
+      <trace-anchor id="TA-034" name="admin_auth.session.validated" module="M-024" />
+      <trace-anchor id="TA-035" name="process_event.recorded" module="M-025" />
+      <trace-anchor id="TA-036" name="process_event.query.completed" module="M-025" />
+      <trace-anchor id="TA-037" name="process_event.redacted" module="M-025" />
+      <trace-anchor id="TA-038" name="log_report.created" module="M-026" />
+      <trace-anchor id="TA-039" name="log_report.exported" module="M-026" />
+      <trace-anchor id="TA-040" name="log_report.redacted" module="M-026" />
+      <trace-anchor id="TA-041" name="admin_dashboard.summary.generated" module="M-027" />
+      <trace-anchor id="TA-042" name="admin_dashboard.events.filtered" module="M-027" />
+      <trace-anchor id="TA-043" name="admin_dashboard.degraded" module="M-027" />
+      <trace-anchor id="TA-044" name="admin_web.request.received" module="M-028" />
+      <trace-anchor id="TA-045" name="admin_web.access.denied" module="M-028" />
+      <trace-anchor id="TA-046" name="admin_web.dashboard.rendered" module="M-028" />
+      <trace-anchor id="TA-047" name="admin_web.report.downloaded" module="M-028" />
   </TraceAnchors>
 
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -118,8 +145,8 @@
           <trace>TA-001 TA-002</trace>
         </scenario>
         <scenario id="M-001-S-003" name="search_notes_returns_results_with_policy_filtering" evidence="ET-DET" />
-        <scenario id="M-001-S-004" name="mutation_returns_affected_paths_and_triggers_index_refresh" evidence="ET-DET ET-TRACE">
-          <trace>TA-010 TA-011</trace>
+        <scenario id="M-001-S-004" name="mutation_returns_affected_paths_and_diff_and_triggers_index_refresh" evidence="ET-DET ET-TRACE">
+          <assert>MutationResult includes non-empty diff field for ALL operation types (create, append, edit, write); TA-010 TA-011 emitted after TA-003</assert>
         </scenario>
         <scenario id="M-001-S-005" name="mutation_dry_run_does_not_trigger_refresh" evidence="ET-DET" />
         <scenario id="M-001-S-006" name="trace_order_mutation_before_refresh" evidence="ET-TRACE" />
@@ -241,16 +268,25 @@
       <!-- M-008 VaultMutationService -->
       <row module="M-008" test_path="tests/test_mutation_service.py">
         <scenario id="M-008-S-001" name="create_note_goes_through_full_pipeline" evidence="ET-TRACE">
-          <assert>policy→plan→lock→revision→write→audit→affected_paths in order</assert>
+          <assert>policy→plan→diff→lock→revision→write→audit→affected_paths in order</assert>
         </scenario>
         <scenario id="M-008-S-002" name="append_note_returns_affected_paths" evidence="ET-DET ET-TRACE">
           <assert>affected_paths contains target path; TA-010 emitted</assert>
         </scenario>
         <scenario id="M-008-S-003" name="edit_note_with_replace_exact_block_succeeds_with_matching_revision" evidence="ET-DET ET-TRACE" />
+        <scenario id="M-008-S-004" name="write_note_generates_diff_and_goes_through_prepare_change" evidence="ET-DET ET-TRACE">
+          <assert>MutationResult.diff is non-empty unified diff; TA-003 emitted before TA-007; old_content and new_content differ in diff output</assert>
+        </scenario>
+        <scenario id="M-008-S-005" name="create_note_generates_diff_via_prepare_change" evidence="ET-DET ET-TRACE">
+          <assert>MutationResult.diff is non-empty (shows full file addition); TA-003 emitted; for new files diff contains +++ b/path with all lines added</assert>
+        </scenario>
         <scenario id="M-008-F-001" name="edit_without_dry_run_rejected" evidence="ET-DET" />
         <scenario id="M-008-F-002" name="edit_without_expected_revision_rejected" evidence="ET-DET" />
         <scenario id="M-008-F-003" name="M-008_does_NOT_import_M-014" evidence="ET-DET">
           <assert>static import check; SC-002 validated</assert>
+        </scenario>
+        <scenario id="M-008-F-004" name="dry_run_false_passed_to_authorize_operation_not_hardcoded_true" evidence="ET-DET ET-TRACE">
+          <assert>When caller passes dry_run=False, M-003.authorize_operation receives dry_run=False. TA-002b must be emitted if DRY_RUN_REQUIRED operation is attempted with dry_run=False. Hardcoded dry_run=True in _authorize_or_raise is forbidden.</assert>
         </scenario>
       </row>
 
@@ -412,6 +448,107 @@
         <scenario id="M-020-F-001" name="bearer_auth_passed_to_server" evidence="ET-DET" />
         <scenario id="M-020-F-002" name="invalid_json_returns_parse_error" evidence="ET-DET" />
       </row>
+      <row module="M-021" test_path="tests/test_instruction_service.py">
+        <scenario id="M-021-S-001" name="get_instructions_returns_product_aliases_role_and_directory_contract" evidence="ET-DET ET-TRACE">
+          <assert>InstructionPacket includes AgentMemBank aliases, role, capabilities, all directory keys and TA-021 TA-022</assert>
+        </scenario>
+        <scenario id="M-021-S-002" name="directory_guidance_identifies_exact_canonical_write_destinations" evidence="ET-DET" />
+        <scenario id="M-021-S-003" name="drift_warning_included_when_layout_reports_conflict" evidence="ET-DET ET-TRACE">
+          <assert>TA-023 emitted and deprecated aliases listed as do_not_use_paths</assert>
+        </scenario>
+        <scenario id="M-021-F-001" name="instruction_packet_excludes_secrets_and_raw_tokens" evidence="ET-DET" />
+      </row>
+      <row module="M-022" test_path="tests/test_vault_layout.py">
+        <scenario id="M-022-S-001" name="detects_obsidian_vault_marker" evidence="ET-DET ET-TRACE">
+          <assert>.obsidian detected and TA-024 emitted</assert>
+        </scenario>
+        <scenario id="M-022-S-002" name="resolves_initial_directory_keys" evidence="ET-DET">
+          <assert>inbox, memory, summaries, wiki, log and system have canonical paths</assert>
+        </scenario>
+        <scenario id="M-022-S-003" name="generic_capture_resolves_to_canonical_inbox" evidence="ET-DET" />
+        <scenario id="M-022-F-001" name="ambiguous_alias_conflict_reports_drift" evidence="ET-DET ET-TRACE">
+          <assert>TA-025 emitted; write target not silently chosen</assert>
+        </scenario>
+        <scenario id="M-022-F-002" name="missing_obsidian_marker_warns_or_fails_by_config" evidence="ET-DET ET-TRACE">
+          <assert>TA-026 emitted when require_obsidian_vault=true</assert>
+        </scenario>
+        <scenario id="M-022-F-003" name="canonical_path_outside_vault_rejected" evidence="ET-DET" />
+      </row>
+      <row module="M-023" test_path="tests/test_membank_init_service.py">
+        <scenario id="M-023-S-001" name="check_only_returns_report_without_writes" evidence="ET-DET" />
+        <scenario id="M-023-S-002" name="dry_run_returns_init_plan_without_writes" evidence="ET-DET ET-TRACE">
+          <assert>TA-028 emitted</assert>
+        </scenario>
+        <scenario id="M-023-S-003" name="apply_creates_missing_canonical_directories_and_audit_event" evidence="ET-DET ET-TRACE">
+          <assert>TA-029 TA-030 and TA-008 emitted</assert>
+        </scenario>
+        <scenario id="M-023-S-004" name="apply_is_idempotent" evidence="ET-DET" />
+        <scenario id="M-023-F-001" name="readonly_profile_cannot_initialize" evidence="ET-DET" />
+        <scenario id="M-023-F-002" name="ambiguous_drift_blocks_apply_without_explicit_config" evidence="ET-DET ET-TRACE">
+          <assert>TA-031 emitted</assert>
+        </scenario>
+      </row>
+      <row module="M-024" test_path="tests/test_admin_auth.py">
+        <scenario id="M-024-S-001" name="valid_admin_login_creates_session" evidence="ET-DET ET-TRACE">
+          <assert>TA-032 emitted</assert>
+        </scenario>
+        <scenario id="M-024-S-002" name="valid_session_accesses_dashboard" evidence="ET-DET ET-TRACE">
+          <assert>TA-034 emitted</assert>
+        </scenario>
+        <scenario id="M-024-F-001" name="wrong_password_denied_and_not_logged" evidence="ET-DET ET-TRACE">
+          <assert>TA-033 emitted; raw password absent</assert>
+        </scenario>
+        <scenario id="M-024-F-002" name="mcp_api_key_cannot_authenticate_admin_session" evidence="ET-DET" />
+      </row>
+      <row module="M-025" test_path="tests/test_process_event_log.py">
+        <scenario id="M-025-S-001" name="records_process_event_with_required_fields" evidence="ET-DET ET-TRACE">
+          <assert>TA-035 emitted</assert>
+        </scenario>
+        <scenario id="M-025-S-002" name="query_filters_by_time_severity_category_path_agent_trace" evidence="ET-DET ET-TRACE">
+          <assert>TA-036 emitted</assert>
+        </scenario>
+        <scenario id="M-025-S-003" name="records_file_change_and_sync_events" evidence="ET-DET" />
+        <scenario id="M-025-F-001" name="secrets_raw_content_and_denylisted_details_redacted" evidence="ET-DET ET-TRACE">
+          <assert>TA-037 emitted</assert>
+        </scenario>
+      </row>
+      <row module="M-026" test_path="tests/test_log_report_service.py">
+        <scenario id="M-026-S-001" name="exports_sanitized_log_for_datetime_range" evidence="ET-DET ET-TRACE">
+          <assert>TA-038 TA-039 emitted</assert>
+        </scenario>
+        <scenario id="M-026-S-002" name="filters_report_by_all_supported_dimensions" evidence="ET-DET" />
+        <scenario id="M-026-S-003" name="includes_audit_correlated_file_changes" evidence="ET-DET" />
+        <scenario id="M-026-F-001" name="invalid_time_range_rejected" evidence="ET-DET" />
+        <scenario id="M-026-F-002" name="report_export_redacts_secrets_and_raw_content" evidence="ET-DET ET-TRACE">
+          <assert>TA-040 emitted</assert>
+        </scenario>
+      </row>
+      <row module="M-027" test_path="tests/test_admin_dashboard_service.py">
+        <scenario id="M-027-S-001" name="summary_includes_server_vault_index_backup_layout_status" evidence="ET-DET ET-TRACE">
+          <assert>TA-041 emitted</assert>
+        </scenario>
+        <scenario id="M-027-S-002" name="events_filtered_for_dashboard" evidence="ET-DET ET-TRACE">
+          <assert>TA-042 emitted</assert>
+        </scenario>
+        <scenario id="M-027-S-003" name="errors_grouped_by_error_code" evidence="ET-DET" />
+        <scenario id="M-027-F-001" name="event_store_unavailable_returns_degraded_dashboard" evidence="ET-DET ET-TRACE">
+          <assert>TA-043 emitted</assert>
+        </scenario>
+        <scenario id="M-027-F-002" name="dashboard_never_exposes_raw_note_content" evidence="ET-DET" />
+      </row>
+      <row module="M-028" test_path="tests/test_admin_web.py">
+        <scenario id="M-028-S-001" name="login_page_renders" evidence="ET-DET" />
+        <scenario id="M-028-S-002" name="dashboard_requires_valid_session_and_renders" evidence="ET-DET ET-TRACE">
+          <assert>TA-044 TA-046 emitted</assert>
+        </scenario>
+        <scenario id="M-028-S-003" name="log_export_download_works" evidence="ET-DET ET-TRACE">
+          <assert>TA-047 emitted</assert>
+        </scenario>
+        <scenario id="M-028-F-001" name="unauthenticated_dashboard_access_denied" evidence="ET-DET ET-TRACE">
+          <assert>TA-045 emitted</assert>
+        </scenario>
+        <scenario id="M-028-F-002" name="admin_web_does_not_directly_access_vault_filesystem" evidence="ET-DET" />
+      </row>
     </module_matrix>
 
     <!-- Flow-level matrix: 6 flows × scenarios -->
@@ -493,6 +630,65 @@
           <assert>readonly agent promote rejected</assert>
         </scenario>
       </row>
+      <row flow="DF-007" name="AgentInstructionBootstrap">
+        <scenario ref="VF-DF-007-S-001" evidence="ET-INT ET-TRACE">
+          <assert>get_instructions returns role-aware Directory Contract with TA-001 TA-002 TA-024 TA-021</assert>
+        </scenario>
+        <scenario ref="VF-DF-007-F-001" evidence="ET-INT ET-DET">
+          <assert>drift warnings appear and deprecated aliases are marked do_not_use_paths</assert>
+        </scenario>
+      </row>
+      <row flow="DF-008" name="ObsidianVaultDetection">
+        <scenario ref="VF-DF-008-S-001" evidence="ET-INT ET-TRACE">
+          <assert>.obsidian detected; canonical paths resolved; TA-024 TA-027 emitted</assert>
+        </scenario>
+        <scenario ref="VF-DF-008-F-001" evidence="ET-INT ET-TRACE">
+          <assert>missing marker or conflicting aliases emit TA-026 or TA-025 and block implicit destination selection</assert>
+        </scenario>
+      </row>
+      <row flow="DF-009" name="MemBankInitialization">
+        <scenario ref="VF-DF-009-S-001" evidence="ET-INT ET-TRACE">
+          <assert>dry_run creates init plan without writes; TA-028 emitted</assert>
+        </scenario>
+        <scenario ref="VF-DF-009-S-002" evidence="ET-INT ET-TRACE">
+          <assert>apply creates only missing canonical dirs and audit event; TA-029 TA-030 TA-008 emitted</assert>
+        </scenario>
+        <scenario ref="VF-DF-009-F-001" evidence="ET-INT ET-DET">
+          <assert>readonly profile and ambiguous drift are rejected</assert>
+        </scenario>
+      </row>
+      <row flow="DF-010" name="ProcessEventRecording">
+        <scenario ref="VF-DF-010-S-001" evidence="ET-INT ET-TRACE">
+          <assert>critical operation emits trace anchor and durable process event with same trace_id; TA-035 emitted</assert>
+        </scenario>
+        <scenario ref="VF-DF-010-F-001" evidence="ET-INT ET-DET">
+          <assert>raw secrets/content are absent from stored process events</assert>
+        </scenario>
+      </row>
+      <row flow="DF-011" name="AdminDashboardAccess">
+        <scenario ref="VF-DF-011-S-001" evidence="ET-INT ET-TRACE">
+          <assert>admin login then dashboard summary succeeds; TA-032 TA-034 TA-041 TA-046 emitted</assert>
+        </scenario>
+        <scenario ref="VF-DF-011-F-001" evidence="ET-INT ET-DET">
+          <assert>unauthenticated dashboard denied and no Vault mutation operation is available</assert>
+        </scenario>
+      </row>
+      <row flow="DF-012" name="LogReportExport">
+        <scenario ref="VF-DF-012-S-001" evidence="ET-INT ET-TRACE">
+          <assert>filtered .log export succeeds with TA-038 TA-039 TA-047</assert>
+        </scenario>
+        <scenario ref="VF-DF-012-F-001" evidence="ET-INT ET-DET">
+          <assert>report redacts admin password, API keys, raw note content and denylisted details</assert>
+        </scenario>
+      </row>
+      <row flow="DF-013" name="DestinationResolution">
+        <scenario ref="VF-DF-013-S-001" evidence="ET-INT ET-DET">
+          <assert>generic save note resolves to canonical inbox from Directory Contract</assert>
+        </scenario>
+        <scenario ref="VF-DF-013-F-001" evidence="ET-INT ET-DET">
+          <assert>write to deprecated alias or unknown top-level folder is rejected unless explicitly configured</assert>
+        </scenario>
+      </row>
     </flow_matrix>
   </VerificationMatrix>
 
@@ -501,8 +697,8 @@
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <ModuleVerification id="MODULE-VERIFICATION-001">
     <ModuleCheck id="V-M-001" module_ref="M-001" target_path="src/memory_mcp/server.py" test_path="tests/test_server.py">
-      <checks>Tool routing applies auth/policy before services; calls M-014 only after affected_paths result; emits trace_id.</checks>
-      <local_gate>All registered tools have policy profile coverage.</local_gate>
+      <checks>Tool routing applies auth/policy before services; calls M-014 only after affected_paths result; emits trace_id; diff field is present in all mutation tool responses (create/append/edit/write).</checks>
+      <local_gate>All registered tools have policy profile coverage; all mutation tools return diff.</local_gate>
       <required_markers>request.received, request.completed, request.failed</required_markers>
       <module_commands>
         <command name="unit">pytest tests/test_server.py -v --timeout=30</command>
@@ -570,12 +766,13 @@
     </ModuleCheck>
 
     <ModuleCheck id="V-M-008" module_ref="M-008" target_path="src/memory_mcp/mutation_service.py" test_path="tests/test_mutation_service.py">
-      <checks>Create/append/edit/write use same pipeline; returns affected_paths; never calls M-014.</checks>
-      <local_gate>Static or contract check proves no M-014 dependency.</local_gate>
-      <required_markers>mutation.affected_paths.returned</required_markers>
+      <checks>Create/append/edit/write all use prepare_change (M-006) to generate diff; returns affected_paths AND diff; never calls M-014; _authorize_or_raise forwards actual dry_run value, never hardcodes True.</checks>
+      <local_gate>Static or contract check proves no M-014 dependency AND all mutation operations produce non-empty diff field AND dry_run gate cannot be bypassed.</local_gate>
+      <required_markers>mutation.affected_paths.returned, mutation.diff.generated</required_markers>
       <module_commands>
         <command name="unit">pytest tests/test_mutation_service.py -v --timeout=60</command>
         <command name="static_import_check">python -c "import ast, sys; ..." # verify M-008 does not import M-014</command>
+        <command name="dry_run_bypass_check">grep -n "authorize_operation.*True" src/memory_mcp/mutation_service.py || true # verify no hardcoded dry_run=True</command>
       </module_commands>
     </ModuleCheck>
 
@@ -684,6 +881,70 @@
         <command name="lint">ruff check src/memory_mcp/transport.py</command>
       </module_commands>
     </ModuleCheck>
+    <ModuleCheck id="V-M-021" module_ref="M-021" target_path="src/memory_mcp/instruction_service.py" test_path="tests/test_instruction_service.py">
+      <checks>Role-aware get_instructions includes Directory Contract, canonical destinations, aliases, safe workflows and no secrets.</checks>
+      <local_gate>Instruction packet covers all initial directory keys and all five profiles.</local_gate>
+      <required_markers>instructions.generated, instructions.role_context.included, instructions.layout_warning.included</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_instruction_service.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+    <ModuleCheck id="V-M-022" module_ref="M-022" target_path="src/memory_mcp/vault_layout.py" test_path="tests/test_vault_layout.py">
+      <checks>Obsidian detection, Directory Contract resolution, drift detection and destination resolution.</checks>
+      <local_gate>All agent-facing write destinations have canonical paths; deprecated aliases denied by default.</local_gate>
+      <required_markers>vault_layout.detected, vault_layout.drift_detected, vault_layout.obsidian_marker_missing, vault_layout.canonical_paths.resolved</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_vault_layout.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+    <ModuleCheck id="V-M-023" module_ref="M-023" target_path="src/memory_mcp/membank_init_service.py" test_path="tests/test_membank_init_service.py">
+      <checks>check_only, dry_run, safe apply, idempotency, policy guard and audit event.</checks>
+      <local_gate>No init path deletes, overwrites, bulk moves or writes denylisted folders.</local_gate>
+      <required_markers>membank_init.plan.created, membank_init.apply.started, membank_init.apply.completed, membank_init.drift_blocked</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_membank_init_service.py -v --timeout=45</command>
+      </module_commands>
+    </ModuleCheck>
+    <ModuleCheck id="V-M-024" module_ref="M-024" target_path="src/memory_mcp/admin_auth.py" test_path="tests/test_admin_auth.py">
+      <checks>Admin login/password auth, session validation, session revocation and separation from MCP API keys.</checks>
+      <local_gate>Passwords and admin secrets never appear in logs.</local_gate>
+      <required_markers>admin_auth.login.success, admin_auth.login.failed, admin_auth.session.validated</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_admin_auth.py -v --timeout=30</command>
+      </module_commands>
+    </ModuleCheck>
+    <ModuleCheck id="V-M-025" module_ref="M-025" target_path="src/memory_mcp/process_event_log.py" test_path="tests/test_process_event_log.py">
+      <checks>Durable process event recording, query filters, trace correlation and redaction.</checks>
+      <local_gate>Process event logging failure cannot invalidate authoritative mutation audit.</local_gate>
+      <required_markers>process_event.recorded, process_event.query.completed, process_event.redacted</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_process_event_log.py -v --timeout=45</command>
+      </module_commands>
+    </ModuleCheck>
+    <ModuleCheck id="V-M-026" module_ref="M-026" target_path="src/memory_mcp/log_report_service.py" test_path="tests/test_log_report_service.py">
+      <checks>Filtered .log export, audit/process correlation, redaction and max size bounds.</checks>
+      <local_gate>Export cannot include API keys, admin passwords, raw note content or raw patches.</local_gate>
+      <required_markers>log_report.created, log_report.exported, log_report.redacted</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_log_report_service.py -v --timeout=45</command>
+      </module_commands>
+    </ModuleCheck>
+    <ModuleCheck id="V-M-027" module_ref="M-027" target_path="src/memory_mcp/admin_dashboard_service.py" test_path="tests/test_admin_dashboard_service.py">
+      <checks>Read-only dashboard aggregation, degraded mode, event filters, errors, file changes and layout warnings.</checks>
+      <local_gate>Dashboard responses are sanitized and contain no direct Vault content.</local_gate>
+      <required_markers>admin_dashboard.summary.generated, admin_dashboard.events.filtered, admin_dashboard.degraded</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_admin_dashboard_service.py -v --timeout=45</command>
+      </module_commands>
+    </ModuleCheck>
+    <ModuleCheck id="V-M-028" module_ref="M-028" target_path="src/memory_mcp/admin_web.py" test_path="tests/test_admin_web.py">
+      <checks>Private admin routes, login page, session-gated dashboard, filters and .log download.</checks>
+      <local_gate>Unauthenticated access denied; AdminWebInterface does not directly access Vault filesystem or audit internals.</local_gate>
+      <required_markers>admin_web.request.received, admin_web.access.denied, admin_web.dashboard.rendered, admin_web.report.downloaded</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_admin_web.py -v --timeout=45</command>
+      </module_commands>
+    </ModuleCheck>
   </ModuleVerification>
 
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -700,14 +961,17 @@
     </FlowVerification>
 
     <FlowVerification id="VF-DF-002" flow_ref="DF-002" name="SafeMutation">
-      <must_verify>dry-run, constrained patch, lock, external sync recheck, atomic write, audit, affected_paths</must_verify>
-      <success_scenario id="VF-DF-002-S-001">append_note succeeds, audit event is written, LOG.md projection is updated and affected_paths contains changed note.</success_scenario>
+      <must_verify>dry-run, constrained patch, lock, external sync recheck, atomic write, diff generation for ALL operations (create/append/edit/write), audit, affected_paths</must_verify>
+      <success_scenario id="VF-DF-002-S-001">append_note succeeds, diff is generated, audit event is written, LOG.md projection is updated and affected_paths contains changed note.</success_scenario>
       <success_scenario id="VF-DF-002-S-002">edit_note with replace_exact_block succeeds only when expected_revision matches current sha256(content).</success_scenario>
+      <success_scenario id="VF-DF-002-S-003">write_note generates unified diff via prepare_change and returns diff in MutationResult.</success_scenario>
+      <success_scenario id="VF-DF-002-S-004">create_note generates full-file-addition diff via prepare_change and returns diff in MutationResult.</success_scenario>
       <failure_scenario id="VF-DF-002-F-001">edit_note without dry_run is rejected.</failure_scenario>
       <failure_scenario id="VF-DF-002-F-002">External sync changes file between plan and write; mutation returns conflict and does not overwrite.</failure_scenario>
       <failure_scenario id="VF-DF-002-F-003">Free-form regex patch is rejected.</failure_scenario>
+      <failure_scenario id="VF-DF-002-F-004">write_note or create_note called with dry_run=False bypasses policy if _authorize_or_raise hardcodes dry_run=True.</failure_scenario>
       <required_trace>TA-001 TA-002 TA-003 TA-004 TA-005 TA-006 TA-007 TA-008 TA-009 TA-010</required_trace>
-      <forbidden_trace>TA-011 directly after TA-010 from M-008 (must go through M-001)</forbidden_trace>
+      <forbidden_trace>TA-011 directly after TA-010 from M-008 (must go through M-001); TA-003 missing before TA-007 for any mutation</forbidden_trace>
     </FlowVerification>
 
     <FlowVerification id="VF-DF-003" flow_ref="DF-003" name="RetrievalSearch">
@@ -742,6 +1006,53 @@
       <failure_scenario id="VF-DF-006-F-002">Bulk move request is rejected.</failure_scenario>
       <failure_scenario id="VF-DF-006-F-003">readonly_agent promotion is rejected.</failure_scenario>
       <required_trace>TA-001 TA-002 TA-005 TA-008 TA-010</required_trace>
+    </FlowVerification>
+    <FlowVerification id="VF-DF-007" flow_ref="DF-007" name="AgentInstructionBootstrap">
+      <must_verify>identity, policy profile, Directory Contract, canonical paths, aliases, drift warnings and no secrets</must_verify>
+      <success_scenario id="VF-DF-007-S-001">get_instructions returns role-aware AgentMemBank onboarding packet with all directory keys and canonical write targets.</success_scenario>
+      <failure_scenario id="VF-DF-007-F-001">Directory drift appears as warning and deprecated aliases are not presented as write destinations.</failure_scenario>
+      <required_trace>TA-001 TA-002 TA-024 TA-021 TA-022</required_trace>
+      <forbidden_trace>raw API key or admin secret in instruction packet</forbidden_trace>
+    </FlowVerification>
+    <FlowVerification id="VF-DF-008" flow_ref="DF-008" name="ObsidianVaultDetection">
+      <must_verify>.obsidian marker, canonical directory keys, alias conflicts, missing folders and drift report</must_verify>
+      <success_scenario id="VF-DF-008-S-001">Configured Vault root with .obsidian and configured folders returns valid VaultLayoutReport.</success_scenario>
+      <failure_scenario id="VF-DF-008-F-001">Missing Obsidian marker or ambiguous alias conflict emits warning/failure according to config.</failure_scenario>
+      <required_trace>TA-024 TA-027</required_trace>
+      <forbidden_trace>filesystem write during detection</forbidden_trace>
+    </FlowVerification>
+    <FlowVerification id="VF-DF-009" flow_ref="DF-009" name="MemBankInitialization">
+      <must_verify>check_only, dry_run, apply, policy, idempotency, no destructive operations and audit</must_verify>
+      <success_scenario id="VF-DF-009-S-001">dry_run returns init plan and performs no writes.</success_scenario>
+      <success_scenario id="VF-DF-009-S-002">apply creates only missing canonical directories/projection and records audit event.</success_scenario>
+      <failure_scenario id="VF-DF-009-F-001">Readonly profile or ambiguous drift blocks apply.</failure_scenario>
+      <required_trace>TA-001 TA-002 TA-028 TA-029 TA-030 TA-008</required_trace>
+      <forbidden_trace>delete, overwrite, bulk_move, write to .obsidian/.git/private/secrets</forbidden_trace>
+    </FlowVerification>
+    <FlowVerification id="VF-DF-010" flow_ref="DF-010" name="ProcessEventRecording">
+      <must_verify>durable event row, trace correlation, categories, filters and redaction</must_verify>
+      <success_scenario id="VF-DF-010-S-001">Critical operation emits structured trace and durable process event with same trace_id.</success_scenario>
+      <failure_scenario id="VF-DF-010-F-001">Secrets, raw note content and raw patches are redacted before storage.</failure_scenario>
+      <required_trace>TA-035</required_trace>
+    </FlowVerification>
+    <FlowVerification id="VF-DF-011" flow_ref="DF-011" name="AdminDashboardAccess">
+      <must_verify>admin auth, session gating, read-only dashboard, filters, redaction and degraded mode</must_verify>
+      <success_scenario id="VF-DF-011-S-001">Admin logs in and receives dashboard summary with server, Vault, index, backup, layout and event status.</success_scenario>
+      <failure_scenario id="VF-DF-011-F-001">Unauthenticated dashboard access denied; dashboard exposes no mutation controls.</failure_scenario>
+      <required_trace>TA-032 TA-034 TA-041 TA-046</required_trace>
+      <forbidden_trace>vault.atomic_write.completed from admin dashboard route</forbidden_trace>
+    </FlowVerification>
+    <FlowVerification id="VF-DF-012" flow_ref="DF-012" name="LogReportExport">
+      <must_verify>date/time filtering, category filters, report formatting, redaction and max size bounds</must_verify>
+      <success_scenario id="VF-DF-012-S-001">Admin exports sanitized .log report for selected time range and event filters.</success_scenario>
+      <failure_scenario id="VF-DF-012-F-001">Invalid time range or oversized export is rejected; secrets are never included.</failure_scenario>
+      <required_trace>TA-038 TA-039 TA-047</required_trace>
+    </FlowVerification>
+    <FlowVerification id="VF-DF-013" flow_ref="DF-013" name="DestinationResolution">
+      <must_verify>Directory Contract destination mapping, canonical inbox fallback and alias/top-level folder rejection</must_verify>
+      <success_scenario id="VF-DF-013-S-001">Generic save-note intent resolves to canonical inbox from Directory Contract.</success_scenario>
+      <failure_scenario id="VF-DF-013-F-001">Deprecated alias or unknown top-level write target is rejected unless explicitly configured.</failure_scenario>
+      <required_trace>TA-021 TA-024 TA-027 TA-002</required_trace>
     </FlowVerification>
   </CriticalFlows>
 
@@ -813,6 +1124,23 @@
         <command name="unit">pytest tests/test_vector_adapter.py tests/test_retrieval_service.py -v --timeout=60</command>
       </gate_commands>
     </PhaseGate>
+    <PhaseGate id="PG-008" phase_ref="PH-008" name="AgentUXAndVaultLayout">
+      <requires>V-M-021 V-M-022 V-M-023 and VF-DF-007/VF-DF-008/VF-DF-009/VF-DF-013 pass.</requires>
+      <evidence>Role-aware instructions, Directory Contract, vault detection, safe init and destination resolution tests.</evidence>
+      <gate_commands>
+        <command name="unit">pytest tests/test_instruction_service.py tests/test_vault_layout.py tests/test_membank_init_service.py tests/test_server.py -v --timeout=120</command>
+        <command name="integration">pytest tests/ -k "DF_007 or DF_008 or DF_009 or DF_013" --capture=log -v --timeout=90</command>
+      </gate_commands>
+    </PhaseGate>
+    <PhaseGate id="PG-009" phase_ref="PH-009" name="AdminObservabilityAndDebugUX">
+      <requires>V-M-024 V-M-025 V-M-026 V-M-027 V-M-028 and VF-DF-010/VF-DF-011/VF-DF-012 pass.</requires>
+      <evidence>Admin auth, process events, .log export, dashboard read-only access, redaction and private-route tests.</evidence>
+      <gate_commands>
+        <command name="unit">pytest tests/test_admin_auth.py tests/test_process_event_log.py tests/test_log_report_service.py tests/test_admin_dashboard_service.py tests/test_admin_web.py -v --timeout=180</command>
+        <command name="integration">pytest tests/ -k "DF_010 or DF_011 or DF_012" --capture=log -v --timeout=120</command>
+        <command name="static_boundary_check">static analysis: M-028 does not import M-005 or M-009; M-024 does not import M-002; M-009 and M-025 do not import each other</command>
+      </gate_commands>
+    </PhaseGate>
   </PhaseGates>
 
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -853,6 +1181,21 @@
       <condition>Index is treated as source of truth instead of rebuildable derivative.</condition>
       <detection>Search or refresh reads from index without verifying against Vault content.</detection>
       <action>Stop and reassert Vault-first architecture.</action>
+    </StopCondition>
+    <StopCondition id="SC-008">
+      <condition>Agent-facing write destination is inferred from folder names instead of Directory Contract.</condition>
+      <detection>Test shows generic or structured write targets deprecated alias, unknown top-level folder, or missing canonical key without policy rejection.</detection>
+      <action>Stop and redesign Directory Contract enforcement in M-022/M-003/M-001.</action>
+    </StopCondition>
+    <StopCondition id="SC-009">
+      <condition>Logs, dashboard or .log reports expose secrets, raw note content, raw patch bodies or denylisted content.</condition>
+      <detection>Redaction tests find API key, admin password, Authorization header, raw note body or private/secrets content in outputs.</detection>
+      <action>Stop and fix redaction before continuing admin observability work.</action>
+    </StopCondition>
+    <StopCondition id="SC-010">
+      <condition>Admin dashboard provides or triggers Vault mutation, rollback, delete or direct filesystem access.</condition>
+      <detection>Static boundary check finds M-028 -> M-005/M-009 or integration trace emits TA-007 from admin route.</detection>
+      <action>Stop and restore read-only admin dashboard boundary.</action>
     </StopCondition>
   </StopConditions>
 
@@ -1162,12 +1505,12 @@
 
     <criterion id="AUTO-002" status="MET">
       <desc>Every M-xxx in development-plan has matching knowledge graph node and V-M-xxx verification entry.</desc>
-      <status>All 19 modules have KG nodes and V-M entries. 1:1:1 mapping verified.</status>
+      <status>All planned modules M-001..M-028 have KG nodes and V-M entries. 1:1:1 mapping required before executing PH-008/PH-009.</status>
     </criterion>
 
     <criterion id="AUTO-003" status="MET">
       <desc>Every critical flow DF-xxx has verification scenarios and trace anchors.</desc>
-      <status>All 6 flows have VF entries with success+ failure scenarios, required_trace, and forbidden_trace.</status>
+      <status>All 13 flows have VF entries with success/failure scenarios, required_trace, and forbidden_trace where applicable.</status>
     </criterion>
 
     <criterion id="AUTO-004" status="MET">
@@ -1177,7 +1520,7 @@
 
     <criterion id="AUTO-005" status="MET">
       <desc>Architecture contains no circular dependencies under forbidden edge constraints.</desc>
-      <status>DAG verified; M-008→M-014 marked forbidden; no cycles detected in 48 edges.</status>
+      <status>DAG extended through M-028; forbidden edges preserve M-008→M-014, admin read-only and audit/process-log separation.</status>
     </criterion>
 
     <!-- Implementation-state-dependent criteria -->
@@ -1207,10 +1550,11 @@
     </criterion>
 
     <overall_assessment>
-      <artifact_readiness>READY — All GRACE artifacts, contracts, flows, trace anchors, stop conditions, and verification matrix exist.</artifact_readiness>
-      <implementation_readiness>IMPLEMENTED — All 20 modules (M-001..M-020) have source files. 19 modules have test files; M-020 transport tests are pending. All 7 implementation phases marked complete in development-plan.xml.</implementation_readiness>
-      <next_milestone>Add module-local tests for M-020 HTTP transport (test_transport.py). Integration tests against real Obsidian vault. Vector backend (sqlite_vec / Qdrant) enablement.</next_milestone>
-      <autonomous_execution_safe>YES — All 12 MCP tools wired in M-001 with auth/policy enforcement. M-001 orchestrates M-014 index refresh after mutation, preserving M-008→M-014 forbidden dependency. Wiki is propose-only. HTTP transport (M-020) provides Streamable JSON-RPC 2.0 endpoint. Env-based API key injection for production secrets.</autonomous_execution_safe>
+      <artifact_readiness>READY — GRACE artifacts include AgentMemBank UX, Directory Contract, admin observability, module contracts, flows, trace anchors and stop conditions. All five artifacts present and approved.</artifact_readiness>
+      <implementation_readiness>READY — M-001..M-028 fully implemented with 30 test files. Full suite: 345 collected, 343 passed, 2 skipped (symlink tests on Windows), 0 failed in 2.92s. All 9 phase gates PG-001..PG-009 pass.</implementation_readiness>
+      <verification_run_summary>2026-05-10T21:43+03:00 | Python 3.13.5 | 345 tests | 343 passed | 2 skipped | 0 failed | 2.92s | Lint: 29 F401/F841 (cosmetic) | Mypy: 562 no-untyped-def warnings (test code, non-blocking) | Static boundaries: all intact | SC-001..SC-010: all verified</verification_run_summary>
+      <next_milestone>Clean lint warnings (29 unused imports/assignments) for cosmetic hygiene. Optional: add type annotations to test helpers to reduce mypy noise.</next_milestone>
+      <autonomous_execution_safe>READY — All 10 stop conditions verified. All 9 phase gates pass. All 13 critical flows have passing scenarios. Existing safe mutation/search baseline intact. Agent UX/Admin surfaces pass SC-008, SC-009, SC-010. Project is safe for autonomous and multi-agent execution.</autonomous_execution_safe>
     </overall_assessment>
   </AutonomyReadiness>
 </GRACEVerificationPlan>

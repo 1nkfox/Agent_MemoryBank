@@ -1,15 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<GRACERequirements id="REQ-ROOT-001" project="ObsidianMemoryMCP" status="approved" version="1.0" approved_at="2026-05-08T01:27:40+03:00">
+<GRACERequirements id="REQ-ROOT-001" project="AgentMemBank" status="approved" version="1.2" approved_at="2026-05-08T01:27:40+03:00" updated_at="2026-05-10T17:00:00+03:00">
   <Metadata id="REQ-META-001">
-    <title>MCP-сервер памяти для Obsidian Vault</title>
+    <title>AgentMemBank MCP-сервер памяти для Obsidian Vault</title>
     <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
-    <approval>Архитектура утверждена пользователем 2026-05-08; документы GRACE могут быть сгенерированы.</approval>
+    <approval>Архитектура утверждена пользователем 2026-05-08; расширение Agent UX + Admin Observability утверждено 2026-05-10.</approval>
     <language>ru</language>
   </Metadata>
 
   <ProductGoal id="GOAL-001">
     <statement>Создать личный MCP-сервер памяти на VPS, который даёт агентам безопасный, проверяемый и аудитируемый доступ к Obsidian Vault.</statement>
     <rationale>Vault остаётся главным источником истины, а MCP-сервер добавляет контролируемый слой чтения, записи, поиска и аудита для автономных агентов.</rationale>
+    <product_name>AgentMemBank</product_name>
+    <aliases>MemBank MemMCP Мембанк</aliases>
   </ProductGoal>
 
   <ArchitecturalFormula id="AF-001">
@@ -24,6 +26,8 @@
     <principle id="AF-P-009">Semantic search comes later.</principle>
     <principle id="AF-P-010">Wiki is propose-only.</principle>
     <principle id="AF-P-011">Agents never delete.</principle>
+    <principle id="AF-P-012">Directory Contract is authority.</principle>
+    <principle id="AF-P-013">Admin observability is read-only by default.</principle>
   </ArchitecturalFormula>
 
   <Actors id="ACTORS-001">
@@ -111,6 +115,48 @@
       <success_criteria>health_check отражает transport, vault, index, audit and policy state; backup не изменяет content Vault.</success_criteria>
       <linked_flows>DF-001 DF-004</linked_flows>
     </UseCase>
+    <UseCase id="UC-012" name="AgentContextBootstrap">
+      <summary>Агент вызывает get_instructions и получает server-owned контекст: назначение AgentMemBank, роль, политики, Directory Contract и safe workflows.</summary>
+      <primary_actor>ACT-001</primary_actor>
+      <success_criteria>Агент получает точные canonical paths, запрет на deprecated aliases, текущие role capabilities и правила выбора директории без догадок.</success_criteria>
+      <linked_flows>DF-007 DF-013</linked_flows>
+    </UseCase>
+    <UseCase id="UC-013" name="ObsidianVaultDetection">
+      <summary>Сервер детектит, что configured vault root соответствует существующему Obsidian Vault, и выявляет drift структуры директорий.</summary>
+      <primary_actor>ACT-005</primary_actor>
+      <success_criteria>.obsidian marker, canonical directories, aliases and drift status представлены в VaultLayoutReport без записи в Vault.</success_criteria>
+      <linked_flows>DF-008</linked_flows>
+    </UseCase>
+    <UseCase id="UC-014" name="MemBankInitialization">
+      <summary>Admin или trusted profile запускает membank_init для check_only, dry_run или безопасного apply минимальной структуры AgentMemBank.</summary>
+      <primary_actor>ACT-005</primary_actor>
+      <success_criteria>Инициализация idempotent, не удаляет, не перетирает, не пишет в denylisted paths и возвращает план/результат с audit event при apply.</success_criteria>
+      <linked_flows>DF-009</linked_flows>
+    </UseCase>
+    <UseCase id="UC-015" name="RoleAwareAgentOnboarding">
+      <summary>Агент получает понятные инструкции по своей роли, разрешённым инструментам, write targets и ограничениям текущего token profile.</summary>
+      <primary_actor>ACT-001</primary_actor>
+      <success_criteria>Readonly, trusted_writer, wiki_maintainer, cron_summarizer и admin получают различающиеся role-aware instructions без раскрытия secrets.</success_criteria>
+      <linked_flows>DF-007</linked_flows>
+    </UseCase>
+    <UseCase id="UC-016" name="AdminDebugDashboard">
+      <summary>Admin открывает приватную web-страницу с login/password и отслеживает health, процессы, ошибки, обращения агентов, синхронизации и файловые изменения.</summary>
+      <primary_actor>ACT-005</primary_actor>
+      <success_criteria>Dashboard доступен только после admin session, показывает sanitized process timeline и не предоставляет write/rollback операции в этом релизе.</success_criteria>
+      <linked_flows>DF-011</linked_flows>
+    </UseCase>
+    <UseCase id="UC-017" name="StructuredProcessLogging">
+      <summary>Сервер пишет durable process events по загрузкам, синхронизациям, MCP обращениям, ошибкам, policy denials, file changes, index refresh, backup и init.</summary>
+      <primary_actor>ACT-005</primary_actor>
+      <success_criteria>Process events queryable по времени, severity, category, path, agent_id и trace_id; secrets и raw note content redacted.</success_criteria>
+      <linked_flows>DF-010</linked_flows>
+    </UseCase>
+    <UseCase id="UC-018" name="LogReportExport">
+      <summary>Admin фильтрует события по дате/времени и параметрам, затем выгружает sanitized .log отчёт.</summary>
+      <primary_actor>ACT-005</primary_actor>
+      <success_criteria>.log report содержит переносимый line-oriented debug timeline, применяет redaction и ограничивает размер выгрузки.</success_criteria>
+      <linked_flows>DF-012</linked_flows>
+    </UseCase>
   </UseCases>
 
   <FunctionalRequirements id="FRS-001">
@@ -122,7 +168,7 @@
     <Requirement id="FR-006" priority="must">read_note должен возвращать content, revision и metadata только для разрешённых paths.</Requirement>
     <Requirement id="FR-007" priority="must">create_note и append_note должны проходить единый policy/mutation/audit pipeline.</Requirement>
     <Requirement id="FR-008" priority="must">edit_note должен принимать только constrained patch operations: append_under_heading, replace_section, replace_exact_text, replace_exact_block, insert_after_heading.</Requirement>
-    <Requirement id="FR-009" priority="must">edit_note и write_note должны требовать expected_revision, dry_run и diff.</Requirement>
+    <Requirement id="FR-009" priority="must">edit_note, write_note И create_note должны требовать expected_revision, dry_run и diff. Diff должен генерироваться через M-006.prepare_change для ВСЕХ типов мутаций (create, append, edit, write). Для create_note diff — это full-file addition. Для write_note diff — unified diff между старым и новым содержимым.</Requirement>
     <Requirement id="FR-010" priority="must">Перед фактической записью система должна повторно вычислять current sha256(content) для защиты от external sync race.</Requirement>
     <Requirement id="FR-011" priority="must">Mutation result должен возвращать affected_paths, old_revision, new_revision, audit_event_id и dry_run flag.</Requirement>
     <Requirement id="FR-012" priority="must">VaultMutationService не должен напрямую вызывать IndexRefreshService.</Requirement>
@@ -136,6 +182,17 @@
     <Requirement id="FR-020" priority="must">70_Wiki должен быть propose-only path; autonomous direct write запрещён.</Requirement>
     <Requirement id="FR-021" priority="must">Все symlink paths и paths с symlink parent component должны отклоняться в MVP.</Requirement>
     <Requirement id="FR-022" priority="must">BackupService должен использовать manual Git backup/health integration без rollback API в MVP.</Requirement>
+    <Requirement id="FR-023" priority="must">Сервер должен предоставлять get_instructions с role-aware контекстом, Directory Contract, canonical paths, deprecated aliases и safe workflows.</Requirement>
+    <Requirement id="FR-024" priority="must">VaultLayoutService должен строить authoritative Directory Contract для всех agent-facing папок, а не только inbox.</Requirement>
+    <Requirement id="FR-025" priority="must">Агент не должен выбирать write destination по догадке; intent-inferred writes должны использовать Directory Contract или canonical inbox fallback.</Requirement>
+    <Requirement id="FR-026" priority="must">Writes в deprecated aliases и неизвестные top-level folders должны отклоняться, если Directory Contract явно не разрешает override.</Requirement>
+    <Requirement id="FR-027" priority="must">membank_init должен поддерживать check_only, dry_run и apply, быть idempotent и не выполнять delete, overwrite или bulk move.</Requirement>
+    <Requirement id="FR-028" priority="must">Admin dashboard должен быть read-only/debug в этом релизе и требовать отдельный admin login/password session.</Requirement>
+    <Requirement id="FR-029" priority="must">ProcessEventLogService должен писать события загрузок, синхронизаций, обращений, ошибок, policy denials, движения файлов, изменений файлов, index refresh, backup и init.</Requirement>
+    <Requirement id="FR-030" priority="must">LogReportService должен выгружать sanitized .log отчёты с фильтрами по дате/времени, severity, category, path, agent_id, admin_user, trace_id, status и error_code.</Requirement>
+    <Requirement id="FR-031" priority="must">Admin credentials, API keys, Authorization headers, raw note content, raw patch body and denylisted content must never appear in logs, dashboard or .log reports.</Requirement>
+    <Requirement id="FR-032" priority="must">Policy enforcement for dry_run must use the actual dry_run parameter passed by the caller. Hardcoding dry_run=True in _authorize_or_raise or any intermediate layer is forbidden — the DRY_RUN_REQUIRED gate in M-003 must receive and evaluate the real dry_run value.</Requirement>
+    <Requirement id="FR-033" priority="must">MCP Transport (M-020) must have dedicated tests in tests/test_transport.py covering JSON-RPC 2.0 parse errors, MCP initialize/tools/list/tools/call routing, Bearer token extraction, health endpoint, and graceful error responses.</Requirement>
   </FunctionalRequirements>
 
   <NonFunctionalRequirements id="NFRS-001">
@@ -147,6 +204,9 @@
     <Requirement id="NFR-006" category="privacy" priority="must">Denylisted paths private/, secrets/, .obsidian/, .git/ не должны попадать в read/search responses.</Requirement>
     <Requirement id="NFR-007" category="maintainability" priority="should">Модули должны сохранять DAG-зависимости без циклической связности.</Requirement>
     <Requirement id="NFR-008" category="autonomy" priority="must">Stop conditions из verification plan должны останавливать реализацию при нарушении safety boundaries.</Requirement>
+    <Requirement id="NFR-009" category="usability" priority="must">Агент должен получать достаточные инструкции, чтобы точно понимать структуру директорий и write destinations.</Requirement>
+    <Requirement id="NFR-010" category="observability" priority="must">Admin observability должна позволять восстановить sequence of events по trace_id без доступа к raw Vault content.</Requirement>
+    <Requirement id="NFR-011" category="security" priority="must">Admin dashboard должен быть ограничен private network boundary и read-only в первом релизе.</Requirement>
   </NonFunctionalRequirements>
 
   <PolicyShape id="POL-001">
@@ -172,6 +232,23 @@
     <bulk_move_allowed>false</bulk_move_allowed>
     <symlinks_allowed>false</symlinks_allowed>
   </PolicyShape>
+
+  <DirectoryContractPolicy id="DIR-POL-001" storage="hybrid_config_authoritative_optional_markdown_projection">
+    <rule id="DIR-POL-R-001">Directory Contract is authoritative for all agent-facing write destinations.</rule>
+    <rule id="DIR-POL-R-002">Initial semantic keys are inbox, memory, summaries, wiki, log and system.</rule>
+    <rule id="DIR-POL-R-003">Generic capture without explicit destination falls back to canonical inbox.</rule>
+    <rule id="DIR-POL-R-004">Ambiguous structured writes require clarification unless a Directory Contract default_for intent exists.</rule>
+    <rule id="DIR-POL-R-005">Agents must not create new top-level folders unless Directory Contract explicitly allows it.</rule>
+    <rule id="DIR-POL-R-006">Deprecated aliases are read-compatible but denied as write targets by default.</rule>
+    <rule id="DIR-POL-R-007">Optional AgentMemBank.md projection in Vault is human-readable only and not authoritative.</rule>
+  </DirectoryContractPolicy>
+
+  <AdminObservabilityPolicy id="ADMIN-OBS-POL-001">
+    <rule id="ADMIN-OBS-R-001">Admin dashboard is read-only/debug-only in this release.</rule>
+    <rule id="ADMIN-OBS-R-002">Admin login/password auth is separate from MCP API-key auth.</rule>
+    <rule id="ADMIN-OBS-R-003">Dashboard and report export must apply the same redaction policy as logs.</rule>
+    <rule id="ADMIN-OBS-R-004">Process logging failure must not make mutation audit invalid or recursive.</rule>
+  </AdminObservabilityPolicy>
 
   <PatchPolicy id="PP-001">
     <allowed_operation id="PP-OP-001">append_under_heading</allowed_operation>
@@ -199,6 +276,9 @@
     <Included id="MVP-IN-009">SQLite FTS5 with WAL and single writer queue</Included>
     <Included id="MVP-IN-010">affected_paths index refresh</Included>
     <Included id="MVP-IN-011">health_check and manual Git backup</Included>
+    <Included id="MVP-IN-012">get_instructions with authoritative Directory Contract</Included>
+    <Included id="MVP-IN-013">membank_init check_only, dry_run and safe apply</Included>
+    <Included id="MVP-IN-014">read-only admin dashboard with process event filtering and .log export</Included>
     <Excluded id="MVP-EX-001">Qdrant as required dependency</Excluded>
     <Excluded id="MVP-EX-002">autonomous wiki write</Excluded>
     <Excluded id="MVP-EX-003">rollback API</Excluded>
@@ -207,5 +287,7 @@
     <Excluded id="MVP-EX-006">delete</Excluded>
     <Excluded id="MVP-EX-007">free-form regex patch</Excluded>
     <Excluded id="MVP-EX-008">unrestricted move/rename</Excluded>
+    <Excluded id="MVP-EX-009">admin dashboard Vault editing or rollback controls</Excluded>
+    <Excluded id="MVP-EX-010">agent-created arbitrary top-level folders</Excluded>
   </MVPBoundaries>
 </GRACERequirements>

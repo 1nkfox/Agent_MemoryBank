@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<GRACETechnology id="TECH-ROOT-001" project="ObsidianMemoryMCP" status="approved" version="1.0">
+<GRACETechnology id="TECH-ROOT-001" project="AgentMemBank" status="approved" version="1.2" updated_at="2026-05-10T17:00:00+03:00">
   <Metadata id="TECH-META-001">
-    <title>Technology Decisions for Obsidian Memory MCP Server</title>
+    <title>Technology Decisions for AgentMemBank MCP Server</title>
     <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
-    <approval>Architecture approved by user before artifact generation.</approval>
+    <approval>Architecture approved by user before artifact generation; Agent UX + Admin Observability release approved 2026-05-10.</approval>
   </Metadata>
 
   <RuntimeStack id="STACK-001">
@@ -38,11 +38,21 @@
     <rationale>Obsidian Sync may modify files outside the MCP server, therefore content-hash revision checks are required immediately before write.</rationale>
   </Storage>
 
+  <DirectoryContractStack id="DIR-CONTRACT-STACK-001">
+    <authoritative_source id="TECH-DIR-001">server config</authoritative_source>
+    <optional_projection id="TECH-DIR-002">AgentMemBank.md or configured system note in Vault, human-readable only</optional_projection>
+    <initial_semantic_keys id="TECH-DIR-003">inbox memory summaries wiki log system</initial_semantic_keys>
+    <destination_resolution id="TECH-DIR-004">Intent-inferred writes resolve through Directory Contract; generic capture falls back to canonical inbox; ambiguous structured writes require clarification.</destination_resolution>
+    <alias_policy id="TECH-DIR-005">Aliases are detected for drift and read compatibility, but deprecated aliases are denied as write targets by default.</alias_policy>
+    <obsidian_detection id="TECH-DIR-006">Configured vault root should contain .obsidian unless explicitly disabled for tests.</obsidian_detection>
+    <rationale>A config-authoritative Directory Contract gives agents exact write destinations across all Vault folders while optional Markdown projection preserves Obsidian visibility without making service metadata the source of truth.</rationale>
+  </DirectoryContractStack>
+
   <Database id="DB-001">
     <engine id="TECH-DB-001">SQLite</engine>
     <journal_mode id="TECH-DB-002">WAL</journal_mode>
     <busy_timeout id="TECH-DB-003">enabled</busy_timeout>
-    <writer_model id="TECH-DB-004">single_writer_queue</writer_model>
+    <writer_model id="TECH-DB-004">single_writer_queue (asyncio-based; all SQLite writes including index upserts, deletes and schema init must serialize through one writer to avoid SQLITE_BUSY under concurrent refresh)</writer_model>
     <reader_model id="TECH-DB-005">multiple_readers</reader_model>
     <rationale>SQLite WAL and a single writer queue provide enough reliability for a personal Vault while avoiding external infrastructure.</rationale>
   </Database>
@@ -77,7 +87,7 @@
       <option id="AUD-OPT-001">SQLite audit_log table</option>
       <option id="AUD-OPT-002">append-only NDJSON log</option>
     </authoritative_options>
-    <preferred_mvp id="TECH-AUD-002">SQLite audit_log table unless operational simplicity favors NDJSON</preferred_mvp>
+    <preferred_mvp id="TECH-AUD-002">SQLite audit_log table (preferred for queryability and scalability). NDJSON append-only log is acceptable but must NOT use read-modify-write of entire file for each event — use append-only writes or rotating segments.</preferred_mvp>
     <human_projection id="TECH-AUD-003">LOG.md</human_projection>
     <event_fields id="TECH-AUD-004">
       <field id="AUD-FLD-001">event_id</field>
@@ -96,6 +106,15 @@
     <rationale>Machine-readable audit is necessary for traceability and verification; LOG.md is useful but not authoritative because Markdown can be manually edited or corrupted.</rationale>
   </AuditStack>
 
+  <ProcessLoggingStack id="PROCESS-LOG-001">
+    <storage id="TECH-PLOG-001">SQLite process_events table via IndexRepository or same database boundary</storage>
+    <export_format id="TECH-PLOG-002">line-oriented sanitized .log report</export_format>
+    <event_categories id="TECH-PLOG-003">boot config auth mcp_request policy read mutation file_change promotion index_refresh sync_external_change backup membank_init vault_layout admin_dashboard error</event_categories>
+    <filter_fields id="TECH-PLOG-004">from_timestamp to_timestamp severity category event_type agent_id admin_user path_prefix trace_id status error_code</filter_fields>
+    <redaction id="TECH-PLOG-005">No API keys, admin passwords, Authorization headers, raw note content, raw patch body or denylisted content in process events, dashboard or reports.</redaction>
+    <rationale>SQLite-backed process events support filtering and timeline reconstruction, while .log export gives portable debug artifacts without exposing raw Vault content.</rationale>
+  </ProcessLoggingStack>
+
   <SecurityStack id="SEC-001">
     <auth_model id="TECH-SEC-001">API key to agent identity and policy profile</auth_model>
     <profiles id="TECH-SEC-002">
@@ -108,11 +127,22 @@
     <rationale>Profiles limit blast radius when an agent is compromised or issues an incorrect tool call.</rationale>
   </SecurityStack>
 
+  <AdminDashboardStack id="ADMIN-DASH-001">
+    <web_runtime id="TECH-ADMIN-001">aiohttp routes co-hosted or mounted beside Streamable HTTP transport</web_runtime>
+    <admin_auth id="TECH-ADMIN-002">separate login/password session auth; credentials loaded from env/config as hash or secret reference</admin_auth>
+    <network_boundary id="TECH-ADMIN-003">private network only; localhost/Tailscale/WireGuard preferred</network_boundary>
+    <release_scope id="TECH-ADMIN-004">read-only debug dashboard: status, event filters, errors, file changes, MCP requests and .log export</release_scope>
+    <forbidden_scope id="TECH-ADMIN-005">No Vault editing, delete, rollback or destructive admin controls in this release</forbidden_scope>
+    <rationale>Admin UI improves operability but must not expand mutation surface; separating dashboard auth from MCP API-key auth keeps human and agent trust domains distinct.</rationale>
+  </AdminDashboardStack>
+
   <ObservabilityStack id="OBS-001">
     <structured_logging id="TECH-OBS-001">required</structured_logging>
     <request_ids id="TECH-OBS-002">required</request_ids>
     <trace_anchors id="TECH-OBS-003">required for critical flows</trace_anchors>
     <error_taxonomy id="TECH-OBS-004">required</error_taxonomy>
+    <durable_process_events id="TECH-OBS-005">required for admin dashboard and report export</durable_process_events>
+    <trace_correlation id="TECH-OBS-006">trace_id must correlate structured logs, process events, audit records and .log report lines</trace_correlation>
     <rationale>Autonomous agents need precise trace evidence for policy decisions, patch validation, lock acquisition, revision checks, audit and index refresh.</rationale>
   </ObservabilityStack>
 
@@ -135,6 +165,10 @@
     <technology id="DISC-006">Index as source of truth</technology>
     <technology id="DISC-007">Direct autonomous writes to 70_Wiki</technology>
     <technology id="DISC-008">Delete and bulk move operations in MVP</technology>
+    <technology id="DISC-009">Agent-inferred folder creation outside Directory Contract</technology>
+    <technology id="DISC-010">Admin dashboard sharing MCP API-key auth as web login</technology>
+    <technology id="DISC-011">Plaintext admin passwords in config or logs</technology>
+    <technology id="DISC-012">Raw note content or raw patch bodies in debug logs</technology>
     <rationale>These choices weaken safety, verification, recoverability or local-first deployment.</rationale>
   </DiscouragedTechnologies>
 </GRACETechnology>

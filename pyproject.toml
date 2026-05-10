@@ -15,7 +15,7 @@ dependencies = [
 memory-mcp = "memory_mcp.server:main"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "mypy", "ruff"]
+dev = ["pytest", "pytest-asyncio", "pytest-timeout", "mypy", "ruff"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
