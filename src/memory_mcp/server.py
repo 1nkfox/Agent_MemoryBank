@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -15,6 +16,8 @@ from memory_mcp.backup_service import backup_vault as _svc_backup_vault
 from memory_mcp.config import ServerConfig
 from memory_mcp.draft_promotion_service import promote_note as _svc_promote_note
 from memory_mcp.index_refresh import refresh_paths as _svc_refresh_paths
+from memory_mcp.instruction_service import InstructionPacket, get_instructions as _svc_get_instructions
+from memory_mcp.membank_init_service import MemBankInitResult, membank_init as _svc_membank_init
 from memory_mcp.mutation_service import append_note as _svc_append_note
 from memory_mcp.mutation_service import create_note as _svc_create_note
 from memory_mcp.mutation_service import edit_note as _svc_edit_note
@@ -32,6 +35,7 @@ from memory_mcp.policy import (
 )
 from memory_mcp.read_service import read_note as _svc_read_note
 from memory_mcp.retrieval_service import search_notes as _svc_search_notes
+from memory_mcp.vault_layout import detect_directory_drift, resolve_directory_contract
 from memory_mcp.wiki_update_service import propose_wiki_update as _svc_propose_wiki_update
 
 logger = logging.getLogger(__name__)
@@ -215,6 +219,22 @@ tool_schemas: dict[str, dict[str, Any]] = {
         "inputSchema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    "get_instructions": {
+        "description": "Return role-aware instructions, directory contract keys, and layout drift warnings",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "membank_init": {
+        "description": "Check, plan, or apply Directory Contract initialization on a vault",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "description": "Mode: check_only (default), dry_run, or apply"},
+            },
         },
     },
 }
@@ -544,6 +564,72 @@ def _handler_health_check(
     return health_check(config)
 
 
+def _handler_get_instructions(
+    identity: AgentIdentity,
+    profile: str,
+    params: dict[str, Any],
+    config: ServerConfig,
+    trace_id: str,
+) -> dict[str, Any]:
+    decision = authorize_operation(profile, str(config.vault.root), "read", True, config)
+    if not decision.allowed:
+        raise PermissionError(decision.reason)
+
+    vault_root = str(config.vault.root)
+    directory_contract = resolve_directory_contract({}, vault_root)
+
+    actual_dirs = sorted(
+        d for d in os.listdir(vault_root)
+        if os.path.isdir(os.path.join(vault_root, d))
+    )
+    directory_drift = detect_directory_drift(directory_contract, vault_root, actual_dirs)
+
+    packet = _svc_get_instructions(identity, profile, directory_contract, directory_drift)
+
+    return {
+        "product_aliases": packet.product_aliases,
+        "role": packet.role,
+        "capabilities": packet.capabilities,
+        "directory_contract_keys": packet.directory_contract_keys,
+        "canonical_paths": packet.canonical_paths,
+        "safe_workflows": packet.safe_workflows,
+        "drift_warnings": packet.drift_warnings,
+        "forbidden_writes": packet.forbidden_writes,
+        "generated_at": packet.generated_at,
+    }
+
+
+async def _handler_membank_init(
+    identity: AgentIdentity,
+    profile: str,
+    params: dict[str, Any],
+    config: ServerConfig,
+    trace_id: str,
+) -> dict[str, Any]:
+    mode = params.get("mode", "check_only")
+    agent_id = identity.key_id
+
+    decision = authorize_operation(profile, str(config.vault.root), "read", True, config)
+    if not decision.allowed:
+        raise PermissionError(decision.reason)
+
+    vault_root = str(config.vault.root)
+    directory_contract = resolve_directory_contract({}, vault_root)
+
+    result = await _svc_membank_init(vault_root, mode, agent_id, trace_id, directory_contract, profile, config)
+
+    return {
+        "success": result.success,
+        "actions_taken": [
+            {"type": a.type, "path": a.path, "status": a.status}
+            for a in result.actions_taken
+        ],
+        "audit_event_id": result.audit_event_id,
+        "message": result.message,
+        "trace_id": result.trace_id,
+    }
+
+
 def _error_code_for_exception(exc: Exception) -> str:
     if isinstance(exc, PermissionError):
         return ErrorCode.POLICY_DENIED
@@ -733,6 +819,8 @@ register_tool("health_check", _handler_health_check)
 register_tool("backup_vault", _handler_backup_vault)
 register_tool("backup_health", _handler_backup_health)
 register_tool("whoami", _handler_whoami)
+register_tool("get_instructions", _handler_get_instructions)
+register_tool("membank_init", _handler_membank_init)
 
 
 def main() -> None:

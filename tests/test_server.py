@@ -195,7 +195,7 @@ class TestAdminOpsTools:
 
 
 class TestToolRegistration:
-    """Verify all 13 MCP tools from the architecture contract are registered."""
+    """Verify all 15 MCP tools are registered (13 original + 2 new)."""
 
     REQUIRED_TOOLS = {
         "read_note",
@@ -211,6 +211,8 @@ class TestToolRegistration:
         "backup_vault",
         "backup_health",
         "whoami",
+        "get_instructions",
+        "membank_init",
     }
 
     def test_all_tools_registered(self):
@@ -671,3 +673,156 @@ class TestRefreshPathsTool:
         assert "updated_paths" in result.data
         assert "deleted_paths" in result.data
         assert result.data["updated_paths"] == ["memory/note.md"]
+
+
+class TestGetInstructionsTool:
+    def test_get_instructions_returns_role_aware_packet(
+        self, temp_vault_root, sample_config_dict
+    ):
+        config = _make_config(temp_vault_root, sample_config_dict)
+
+        result = handle_tool_call("get_instructions", ADMIN_KEY, {}, config)
+
+        assert result.success is True
+        data = result.data
+        assert "role" in data
+        assert data["role"] == "admin"
+        assert "capabilities" in data
+        assert len(data["capabilities"]) > 0
+        assert "directory_contract_keys" in data
+        assert len(data["directory_contract_keys"]) > 0
+        assert "inbox" in data["directory_contract_keys"]
+        assert "memory" in data["directory_contract_keys"]
+        assert "canonical_paths" in data
+        assert "inbox" in data["canonical_paths"]
+        assert "00_Inbox" in data["canonical_paths"]["inbox"]
+        assert "safe_workflows" in data
+        assert len(data["safe_workflows"]) > 0
+        assert "forbidden_writes" in data
+        assert "generated_at" in data
+        assert len(data["generated_at"]) > 0
+
+    def test_get_instructions_includes_drift_warnings_when_layout_has_drift(
+        self, temp_vault_root, sample_config_dict
+    ):
+        config = _make_config(temp_vault_root, sample_config_dict)
+
+        result = handle_tool_call("get_instructions", ADMIN_KEY, {}, config)
+
+        assert result.success is True
+        data = result.data
+        assert "drift_warnings" in data
+        warnings = data["drift_warnings"]
+        assert len(warnings) > 0
+        has_missing = any(
+            "missing canonical" in w.lower() or "deprecated" in w.lower()
+            for w in warnings
+        )
+        assert has_missing, (
+            f"Expected drift warnings to include missing canonical or deprecated alias; got: {warnings}"
+        )
+
+    def test_get_instructions_trusted_writer_role(
+        self, temp_vault_root, sample_config_dict
+    ):
+        config = _make_config(temp_vault_root, sample_config_dict)
+
+        result = handle_tool_call("get_instructions", TRUSTED_KEY, {}, config)
+
+        assert result.success is True
+        data = result.data
+        assert data["role"] == "trusted_writer"
+        assert "create" in data["capabilities"]
+        assert "write" in data["capabilities"]
+
+
+class TestMemBankInitTool:
+    def test_membank_init_check_only_returns_report_without_writes(
+        self, temp_vault_root, sample_config_dict
+    ):
+        config = _make_config(temp_vault_root, sample_config_dict)
+
+        result = handle_tool_call(
+            "membank_init", ADMIN_KEY, {"mode": "check_only"}, config
+        )
+
+        data = result.data
+        assert "success" in data
+        assert "message" in data
+        assert "obsidian" in data["message"].lower() or "check" in data["message"].lower()
+        assert not (temp_vault_root / "00_Log").is_dir(), (
+            "check_only must not create directories"
+        )
+        assert not (temp_vault_root / ".system").is_dir(), (
+            "check_only must not create .system"
+        )
+
+    def test_membank_init_dry_run_returns_plan_without_writes(
+        self, temp_vault_root, sample_config_dict
+    ):
+        config = _make_config(temp_vault_root, sample_config_dict)
+
+        result = handle_tool_call(
+            "membank_init", ADMIN_KEY, {"mode": "dry_run"}, config
+        )
+
+        assert result.success is True
+        data = result.data
+        assert data["success"] is True
+        assert "message" in data
+        msg = data["message"].lower()
+        assert "dry" in msg or "plan" in msg
+        assert "actions_taken" in data
+        assert not (temp_vault_root / "00_Log").is_dir(), (
+            "dry_run must not create directories"
+        )
+        assert not (temp_vault_root / ".system").is_dir(), (
+            "dry_run must not create .system"
+        )
+
+    def test_membank_init_apply_creates_missing_directories(
+        self, tmp_path, sample_config_dict
+    ):
+        vault = tmp_path / "clean_vault"
+        (vault / "00_Inbox").mkdir(parents=True)
+        (vault / "memory").mkdir(parents=True)
+        (vault / "summaries").mkdir(parents=True)
+        (vault / "70_Wiki").mkdir(parents=True)
+        (vault / ".obsidian").mkdir(parents=True)
+        (vault / ".git").mkdir(parents=True)
+
+        config = _make_config(vault, sample_config_dict)
+
+        result = handle_tool_call(
+            "membank_init", ADMIN_KEY, {"mode": "apply"}, config
+        )
+
+        assert result.success is True
+        data = result.data
+        assert data["success"] is True
+        assert (vault / "00_Log").is_dir(), "apply should create missing 00_Log"
+        assert (vault / ".system").is_dir(), "apply should create missing .system"
+        assert "actions_taken" in data
+        assert len(data["actions_taken"]) > 0
+
+    def test_membank_init_invalid_mode_returns_error(
+        self, temp_vault_root, sample_config_dict
+    ):
+        config = _make_config(temp_vault_root, sample_config_dict)
+
+        result = handle_tool_call(
+            "membank_init", ADMIN_KEY, {"mode": "invalid_mode"}, config
+        )
+
+        data = result.data
+        assert data["success"] is False
+        assert "unknown mode" in data["message"].lower()
+
+
+class TestNewToolsRegistered:
+    def test_get_instructions_and_membank_init_registered_in_tool_list(self):
+        assert "get_instructions" in tools
+        assert "membank_init" in tools
+        assert len(tools) == 15, (
+            f"Expected 15 tools registered, got {len(tools)}: {sorted(tools.keys())}"
+        )
