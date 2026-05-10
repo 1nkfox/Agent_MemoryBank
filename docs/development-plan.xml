@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<GRACEDevelopmentPlan id="DEV-ROOT-001" project="ObsidianMemoryMCP" status="approved" version="1.0">
+<GRACEDevelopmentPlan id="DEV-ROOT-001" project="AgentMemBank" status="approved" version="1.2" updated_at="2026-05-10T17:00:00+03:00">
   <Metadata id="DEV-META-001">
-    <title>Development Plan for Obsidian Memory MCP Server</title>
+    <title>Development Plan for AgentMemBank MCP Server</title>
     <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
-    <approval>Architecture approved by user; this plan is the execution baseline.</approval>
+    <approval>Architecture approved by user; Agent UX + Admin Observability extension approved 2026-05-10.</approval>
   </Metadata>
 
   <ArchitecturePrinciples id="DEV-PRINCIPLES-001">
@@ -12,13 +12,15 @@
     <principle id="DEV-P-003">All writes are planned through policy, change planning, lock/revision and audit boundaries.</principle>
     <principle id="DEV-P-004">Mutation services return affected_paths; index refresh is coordinated by entrypoint or background worker.</principle>
     <principle id="DEV-P-005">No delete, bulk move, unrestricted rename or direct autonomous Wiki writes in MVP.</principle>
+    <principle id="DEV-P-006">Agent-facing write destinations are governed by authoritative Directory Contract, never by agent folder-name inference.</principle>
+    <principle id="DEV-P-007">Admin dashboard is read-only/debug-only and must not become a Vault mutation path.</principle>
   </ArchitecturePrinciples>
 
   <ModuleContracts id="MODULES-001">
     <Module id="M-001" name="MCPServerEntrypoint" type="ENTRY_POINT" verification_ref="V-M-001">
       <purpose>Exposes Streamable HTTP MCP tools and coordinates auth, policy, mutation, retrieval, index refresh and health endpoints.</purpose>
-      <scope>Tool registration, request routing, auth/policy orchestration, service invocation, affected_paths handoff, health/admin endpoints.</scope>
-      <depends>M-002 M-003 M-004 M-008 M-010 M-014 M-017 M-018 M-019 M-012</depends>
+      <scope>Tool registration, request routing, auth/policy orchestration, service invocation, affected_paths handoff, health/admin endpoints. Must forward actual dry_run parameter to mutation services; must call M-006.prepare_change via M-008 for ALL mutation types (create/append/edit/write). Index refresh after mutation is synchronous in handler (blocking); background worker pattern is future optimization.</scope>
+      <depends>M-002 M-003 M-004 M-008 M-010 M-014 M-017 M-018 M-019 M-021 M-022 M-023 M-012</depends>
       <target_path>src/memory_mcp/server.py</target_path>
       <test_path>tests/test_server.py</test_path>
       <public_interfaces>
@@ -35,9 +37,164 @@
         <fn-backup_vault id="M-001-FN-011" />
         <fn-backup_health id="M-001-FN-012" />
         <fn-whoami id="M-001-FN-013" />
+        <fn-get_instructions id="M-001-FN-014" />
+        <fn-membank_init id="M-001-FN-015" />
       </public_interfaces>
       <observability>Must create trace_id and emit tool routing, policy outcome and service result anchors.</observability>
       <rationale>Central orchestration keeps MCP transport thin while preventing service-to-service cycles such as mutation directly refreshing index.</rationale>
+    </Module>
+
+    <Module id="M-020" name="MCPTransport" type="ENTRY_POINT" verification_ref="V-M-020">
+      <purpose>Provides aiohttp-based Streamable HTTP MCP transport with JSON-RPC 2.0 handling, Bearer token auth, MCP method routing and health endpoint.</purpose>
+      <scope>JSON-RPC 2.0 over POST /message; Bearer token extraction from Authorization header; MCP version negotiation (2024-11-05); initialize, notifications/initialized, tools/list, tools/call, ping routing; GET /health endpoint; graceful shutdown on SIGTERM/SIGINT; invalid JSON and unknown method error handling.</scope>
+      <depends>M-001 M-011 M-012</depends>
+      <target_path>src/memory_mcp/transport.py</target_path>
+      <test_path>tests/test_transport.py</test_path>
+      <public_interfaces>
+        <fn-run_server id="M-020-FN-001" />
+        <fn-create_app id="M-020-FN-002" />
+        <fn-_message_handler id="M-020-FN-003" />
+        <fn-_health_handler id="M-020-FN-004" />
+        <fn-_handle_mcp_request id="M-020-FN-005" />
+      </public_interfaces>
+      <observability>Emit transport.starting; every JSON-RPC error response must include error code per STANDARD_ERROR_CODES.</observability>
+      <rationale>A separate transport module keeps HTTP concerns isolated from MCP tool logic, enabling transport-level testing independently of Vault operations.</rationale>
+    </Module>
+
+    <Module id="M-021" name="InstructionService" type="CORE_LOGIC" verification_ref="V-M-021">
+      <purpose>Builds role-aware AgentMemBank instructions from identity, policy profile and authoritative Directory Contract.</purpose>
+      <scope>get_instructions payload composition, role capability guidance, safe workflow examples, drift warnings and forbidden alias guidance.</scope>
+      <depends>M-002 M-003 M-011 M-022 M-012</depends>
+      <target_path>src/memory_mcp/instruction_service.py</target_path>
+      <test_path>tests/test_instruction_service.py</test_path>
+      <public_interfaces>
+        <fn-get_instructions id="M-021-FN-001" />
+        <fn-compose_directory_guidance id="M-021-FN-002" />
+        <fn-compose_role_guidance id="M-021-FN-003" />
+        <type-InstructionPacket id="M-021-TYPE-001" />
+      </public_interfaces>
+      <observability>Emit instructions.generated, instructions.role_context.included and instructions.layout_warning.included.</observability>
+      <rationale>Server-owned instructions prevent agents from guessing write destinations or role permissions from incomplete tool descriptions.</rationale>
+    </Module>
+
+    <Module id="M-022" name="VaultLayoutService" type="CORE_LOGIC" verification_ref="V-M-022">
+      <purpose>Detects Obsidian vault root and resolves authoritative Directory Contract for all agent-facing folders.</purpose>
+      <scope>Obsidian marker detection, semantic directory keys, canonical paths, aliases, drift reports, destination resolution and init readiness.</scope>
+      <depends>M-005 M-011 M-012</depends>
+      <target_path>src/memory_mcp/vault_layout.py</target_path>
+      <test_path>tests/test_vault_layout.py</test_path>
+      <public_interfaces>
+        <fn-detect_vault_layout id="M-022-FN-001" />
+        <fn-resolve_directory_contract id="M-022-FN-002" />
+        <fn-resolve_destination_for_intent id="M-022-FN-003" />
+        <fn-detect_directory_drift id="M-022-FN-004" />
+        <type-DirectoryContract id="M-022-TYPE-001" />
+        <type-DirectoryRule id="M-022-TYPE-002" />
+        <type-DirectoryDriftReport id="M-022-TYPE-003" />
+      </public_interfaces>
+      <observability>Emit vault_layout.detected, vault_layout.drift_detected, vault_layout.obsidian_marker_missing and vault_layout.canonical_paths.resolved.</observability>
+      <rationale>Directory selection must be deterministic and enforceable across the whole Vault structure, not only the inbox example.</rationale>
+    </Module>
+
+    <Module id="M-023" name="MemBankInitializationService" type="CORE_LOGIC" verification_ref="V-M-023">
+      <purpose>Safely checks, plans and applies AgentMemBank Directory Contract initialization over an existing Obsidian Vault.</purpose>
+      <scope>check_only layout diagnostics, dry_run init plan, safe apply for missing canonical folders/projection, idempotency and audit event handoff.</scope>
+      <depends>M-003 M-005 M-009 M-022 M-012</depends>
+      <target_path>src/memory_mcp/membank_init_service.py</target_path>
+      <test_path>tests/test_membank_init_service.py</test_path>
+      <public_interfaces>
+        <fn-membank_init id="M-023-FN-001" />
+        <fn-create_init_plan id="M-023-FN-002" />
+        <fn-apply_init_plan id="M-023-FN-003" />
+        <type-MemBankInitPlan id="M-023-TYPE-001" />
+        <type-MemBankInitResult id="M-023-TYPE-002" />
+      </public_interfaces>
+      <observability>Emit membank_init.plan.created, membank_init.apply.started, membank_init.apply.completed and membank_init.drift_blocked.</observability>
+      <rationale>Initialization modifies operational structure and must be planned, idempotent, auditable and non-destructive.</rationale>
+    </Module>
+
+    <Module id="M-024" name="AdminAuthService" type="CORE_LOGIC" verification_ref="V-M-024">
+      <purpose>Authenticates human admin dashboard sessions using login/password credentials separate from MCP API keys.</purpose>
+      <scope>Admin credential validation, session creation, session validation, revocation, timeout and safe failure logging.</scope>
+      <depends>M-011 M-012</depends>
+      <target_path>src/memory_mcp/admin_auth.py</target_path>
+      <test_path>tests/test_admin_auth.py</test_path>
+      <public_interfaces>
+        <fn-authenticate_admin id="M-024-FN-001" />
+        <fn-create_admin_session id="M-024-FN-002" />
+        <fn-validate_admin_session id="M-024-FN-003" />
+        <fn-revoke_admin_session id="M-024-FN-004" />
+        <type-AdminSession id="M-024-TYPE-001" />
+      </public_interfaces>
+      <observability>Emit admin_auth.login.success, admin_auth.login.failed, admin_auth.session.validated and admin_auth.session.revoked without logging passwords.</observability>
+      <rationale>Human dashboard authentication and agent API-key identity are separate trust domains and should not share credential semantics.</rationale>
+    </Module>
+
+    <Module id="M-025" name="ProcessEventLogService" type="CORE_LOGIC" verification_ref="V-M-025">
+      <purpose>Records durable structured process events for admin timelines, filtering, report export and trace correlation.</purpose>
+      <scope>Process event recording, query filters, trace correlation, redaction and storage through the index database boundary.</scope>
+      <depends>M-011 M-012 M-013</depends>
+      <target_path>src/memory_mcp/process_event_log.py</target_path>
+      <test_path>tests/test_process_event_log.py</test_path>
+      <public_interfaces>
+        <fn-record_process_event id="M-025-FN-001" />
+        <fn-query_process_events id="M-025-FN-002" />
+        <fn-correlate_by_trace_id id="M-025-FN-003" />
+        <type-ProcessEvent id="M-025-TYPE-001" />
+        <type-ProcessEventFilter id="M-025-TYPE-002" />
+      </public_interfaces>
+      <observability>Emit process_event.recorded, process_event.query.completed and process_event.redacted.</observability>
+      <rationale>Operational debug events are broader than mutation audit and need queryable storage without becoming Vault source of truth.</rationale>
+    </Module>
+
+    <Module id="M-026" name="LogReportService" type="CORE_LOGIC" verification_ref="V-M-026">
+      <purpose>Builds sanitized line-oriented .log reports from process and audit events with date/time and dimension filters.</purpose>
+      <scope>Report filter validation, audit/process event correlation, redaction, max size bounds and .log formatting.</scope>
+      <depends>M-009 M-025 M-011 M-012</depends>
+      <target_path>src/memory_mcp/log_report_service.py</target_path>
+      <test_path>tests/test_log_report_service.py</test_path>
+      <public_interfaces>
+        <fn-build_log_report id="M-026-FN-001" />
+        <fn-export_log_report id="M-026-FN-002" />
+        <type-LogReportRequest id="M-026-TYPE-001" />
+        <type-LogReportResult id="M-026-TYPE-002" />
+      </public_interfaces>
+      <observability>Emit log_report.created, log_report.exported and log_report.redacted.</observability>
+      <rationale>Portable debug exports need a dedicated redaction and formatting boundary instead of leaking dashboard or database internals.</rationale>
+    </Module>
+
+    <Module id="M-027" name="AdminDashboardService" type="CORE_LOGIC" verification_ref="V-M-027">
+      <purpose>Aggregates read-only admin dashboard data: health, events, errors, file changes, MCP requests, layout drift and report exports.</purpose>
+      <scope>Dashboard summary, recent events, error timeline, process details, report request handoff and degraded-mode results.</scope>
+      <depends>M-011 M-012 M-014 M-017 M-022 M-025 M-026</depends>
+      <target_path>src/memory_mcp/admin_dashboard_service.py</target_path>
+      <test_path>tests/test_admin_dashboard_service.py</test_path>
+      <public_interfaces>
+        <fn-get_dashboard_summary id="M-027-FN-001" />
+        <fn-get_recent_events id="M-027-FN-002" />
+        <fn-get_error_timeline id="M-027-FN-003" />
+        <fn-get_process_detail id="M-027-FN-004" />
+        <fn-request_log_export id="M-027-FN-005" />
+        <type-DashboardSummary id="M-027-TYPE-001" />
+      </public_interfaces>
+      <observability>Emit admin_dashboard.summary.generated, admin_dashboard.events.filtered and admin_dashboard.degraded.</observability>
+      <rationale>Dashboard aggregation should be UI-agnostic and read-only so the web layer cannot become a direct mutation surface.</rationale>
+    </Module>
+
+    <Module id="M-028" name="AdminWebInterface" type="ENTRY_POINT" verification_ref="V-M-028">
+      <purpose>Provides private read-only admin web pages for login, process timeline, filters and .log export.</purpose>
+      <scope>Admin routes, login page, dashboard page, event filter request handling, report download response and session enforcement.</scope>
+      <depends>M-024 M-027 M-012</depends>
+      <target_path>src/memory_mcp/admin_web.py</target_path>
+      <test_path>tests/test_admin_web.py</test_path>
+      <public_interfaces>
+        <fn-create_admin_routes id="M-028-FN-001" />
+        <fn-render_login_page id="M-028-FN-002" />
+        <fn-render_dashboard_page id="M-028-FN-003" />
+        <fn-handle_log_export id="M-028-FN-004" />
+      </public_interfaces>
+      <observability>Emit admin_web.request.received, admin_web.access.denied, admin_web.dashboard.rendered and admin_web.report.downloaded.</observability>
+      <rationale>A thin entry point keeps admin UI private, session-gated and separated from Vault filesystem and audit internals.</rationale>
     </Module>
 
     <Module id="M-002" name="AuthIdentityService" type="CORE_LOGIC" verification_ref="V-M-002">
@@ -137,20 +294,21 @@
     </Module>
 
     <Module id="M-008" name="VaultMutationService" type="CORE_LOGIC" verification_ref="V-M-008">
-      <purpose>Executes approved create/append/edit/write operations and returns affected_paths without calling index refresh directly.</purpose>
-      <scope>Apply MutationPlan, invoke atomic writes, coordinate audit, return mutation results.</scope>
+      <purpose>Executes approved create/append/edit/write operations through ChangePlanner (M-006), returns affected_paths with diff, and never calls index refresh directly.</purpose>
+      <scope>Apply MutationPlan via prepare_change for ALL operation types (create, append, edit, write), generate diff, invoke atomic writes, coordinate audit, return mutation results with diff.</scope>
       <depends>M-003 M-005 M-006 M-007 M-009 M-012</depends>
       <target_path>src/memory_mcp/mutation_service.py</target_path>
       <test_path>tests/test_mutation_service.py</test_path>
       <public_interfaces>
-        <fn-create_note id="M-008-FN-001" />
-        <fn-append_note id="M-008-FN-002" />
-        <fn-edit_note id="M-008-FN-003" />
-        <fn-write_note id="M-008-FN-004" />
-        <type-MutationResult id="M-008-TYPE-001" />
+        <fn-create_note id="M-008-FN-001"><diff_required>true</diff_required><note>Must invoke prepare_change (M-006) to generate unified diff; for new files, diff is full-content addition.</note></fn-create_note>
+        <fn-append_note id="M-008-FN-002"><diff_required>true</diff_required></fn-append_note>
+        <fn-edit_note id="M-008-FN-003"><diff_required>true</diff_required></fn-edit_note>
+        <fn-write_note id="M-008-FN-004"><diff_required>true</diff_required><note>Must invoke prepare_change (M-006) to generate unified diff between old and new content; diff is mandatory even for full-file overwrite.</note></fn-write_note>
+        <type-MutationResult id="M-008-TYPE-001"><field name="diff" required="true" type="str">Unified diff generated by M-006.prepare_change.</field></type-MutationResult>
       </public_interfaces>
-      <observability>Emit mutation.started, mutation.affected_paths.returned and mutation.completed.</observability>
-      <rationale>Mutation is deliberately decoupled from index refresh to preserve the dependency DAG and make write failures easier to reason about.</rationale>
+      <observability>Emit mutation.started, mutation.affected_paths.returned, mutation.diff.generated and mutation.completed.</observability>
+      <anti_pattern id="M-008-AP-001">_authorize_or_raise must pass actual dry_run value to authorize_operation, NOT hardcoded True. Policy gate DRY_RUN_REQUIRED must not be bypassable by skipping dry_run at the policy check level.</anti_pattern>
+      <rationale>Mutation is deliberately decoupled from index refresh to preserve the dependency DAG and make write failures easier to reason about. Every mutation must produce a diff through M-006 so dry-run visibility is uniform across all write operation types.</rationale>
     </Module>
 
     <Module id="M-009" name="AuditLogService" type="CORE_LOGIC" verification_ref="V-M-009">
@@ -368,9 +526,53 @@
     <edge id="DAG-E-045" from="M-014" to="M-001" coupling="entrypoint_or_background_worker" />
     <edge id="DAG-E-046" from="M-017" to="M-001" />
     <edge id="DAG-E-047" from="M-018" to="M-001" />
-    <edge id="DAG-E-048" from="M-019" to="M-001" />
-    <forbidden_edge id="DAG-FORBID-001" from="M-008" to="M-014" rationale="Would create mutation/index coupling and risk circular dependency." />
-  </DependencyDAG>
+      <edge id="DAG-E-048" from="M-019" to="M-001" />
+    <edge id="DAG-E-049" from="M-011" to="M-022" />
+    <edge id="DAG-E-050" from="M-005" to="M-022" />
+    <edge id="DAG-E-051" from="M-002" to="M-021" />
+    <edge id="DAG-E-052" from="M-003" to="M-021" />
+    <edge id="DAG-E-053" from="M-011" to="M-021" />
+    <edge id="DAG-E-054" from="M-022" to="M-021" />
+    <edge id="DAG-E-055" from="M-003" to="M-023" />
+    <edge id="DAG-E-056" from="M-005" to="M-023" />
+    <edge id="DAG-E-057" from="M-009" to="M-023" />
+    <edge id="DAG-E-058" from="M-022" to="M-023" />
+    <edge id="DAG-E-059" from="M-021" to="M-001" />
+    <edge id="DAG-E-060" from="M-022" to="M-001" />
+    <edge id="DAG-E-061" from="M-023" to="M-001" />
+    <edge id="DAG-E-062" from="M-011" to="M-024" />
+    <edge id="DAG-E-063" from="M-012" to="M-024" />
+    <edge id="DAG-E-064" from="M-011" to="M-025" />
+    <edge id="DAG-E-065" from="M-012" to="M-025" />
+    <edge id="DAG-E-066" from="M-013" to="M-025" />
+    <edge id="DAG-E-067" from="M-009" to="M-026" />
+    <edge id="DAG-E-068" from="M-025" to="M-026" />
+    <edge id="DAG-E-069" from="M-011" to="M-026" />
+    <edge id="DAG-E-070" from="M-012" to="M-026" />
+    <edge id="DAG-E-071" from="M-011" to="M-027" />
+    <edge id="DAG-E-072" from="M-012" to="M-027" />
+    <edge id="DAG-E-073" from="M-014" to="M-027" />
+    <edge id="DAG-E-074" from="M-017" to="M-027" />
+    <edge id="DAG-E-075" from="M-022" to="M-027" />
+    <edge id="DAG-E-076" from="M-025" to="M-027" />
+    <edge id="DAG-E-077" from="M-026" to="M-027" />
+    <edge id="DAG-E-078" from="M-024" to="M-028" />
+    <edge id="DAG-E-079" from="M-027" to="M-028" />
+    <edge id="DAG-E-080" from="M-012" to="M-028" />
+      <edge id="DAG-E-081" from="M-001" to="M-020" coupling="entrypoint_delegates_http_to" />
+      <edge id="DAG-E-082" from="M-020" to="M-001" coupling="invokes_tools_via" />
+      <edge id="DAG-E-083" from="M-011" to="M-020" />
+      <forbidden_edge id="DAG-FORBID-001" from="M-008" to="M-014" rationale="Would create mutation/index coupling and risk circular dependency." />
+    <forbidden_edge id="DAG-FORBID-002" from="M-022" to="M-001" rationale="Vault layout detection must not call MCP entrypoint." />
+    <forbidden_edge id="DAG-FORBID-003" from="M-021" to="M-001" rationale="Instruction composition must be service-only and not route tools." />
+    <forbidden_edge id="DAG-FORBID-004" from="M-023" to="M-001" rationale="Initialization service returns result to entrypoint, not call routing." />
+    <forbidden_edge id="DAG-FORBID-005" from="M-023" to="M-014" rationale="Init should return affected_paths; index refresh remains entrypoint/background responsibility." />
+    <forbidden_edge id="DAG-FORBID-006" from="M-028" to="M-005" rationale="Admin web must not directly read or write Vault files." />
+    <forbidden_edge id="DAG-FORBID-007" from="M-028" to="M-009" rationale="Admin web must use LogReportService/DashboardService, not audit internals." />
+    <forbidden_edge id="DAG-FORBID-008" from="M-024" to="M-002" rationale="Admin login/password auth must remain separate from MCP API-key identity auth." />
+    <forbidden_edge id="DAG-FORBID-009" from="M-025" to="M-009" rationale="Process event logging must not create mutation audit loops." />
+    <forbidden_edge id="DAG-FORBID-010" from="M-009" to="M-025" rationale="Audit logging must not depend on process logging for authoritative mutation record." />
+    </DependencyDAG>
 
   <DataFlows id="DATAFLOWS-001">
     <DataFlow id="DF-001" name="SafeRead">
@@ -396,6 +598,34 @@
     <DataFlow id="DF-006" name="DraftInboxPromotion">
       <sequence>Trusted Agent -> M-001 -> M-002 -> M-003 -> M-019 -> M-007 -> M-005 -> M-009 -> return affected_paths</sequence>
       <rationale>Promotion is constrained to single-note trusted move with dry-run, no-overwrite and audit.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-007" name="AgentInstructionBootstrap">
+      <sequence>Agent -> M-001.get_instructions -> M-002 -> M-003 -> M-022 -> M-021 -> return role-aware instructions, Directory Contract and drift warnings</sequence>
+      <rationale>Agents need server-owned context and exact directory guidance before writing.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-008" name="ObsidianVaultDetection">
+      <sequence>Startup or check_only -> M-011 -> M-022 -> M-005 -> return vault layout report and drift status</sequence>
+      <rationale>Vault detection protects the promise that AgentMemBank overlays an existing Obsidian Vault instead of inventing a parallel structure.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-009" name="MemBankInitialization">
+      <sequence>Admin/trusted Agent -> M-001.membank_init -> M-002 -> M-003 -> M-023 -> M-022 -> M-005 -> M-009 -> return init result</sequence>
+      <rationale>Initialization is non-destructive but still requires policy, plan/apply separation and audit.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-010" name="ProcessEventRecording">
+      <sequence>Critical operation -> M-012 trace anchor -> M-025 process event -> M-013 durable queryable storage</sequence>
+      <rationale>Admin debugging needs durable filterable process events correlated by trace_id.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-011" name="AdminDashboardAccess">
+      <sequence>Admin browser -> M-028 -> M-024 -> M-027 -> M-025/M-026/M-022/M-014/M-017 -> sanitized dashboard response</sequence>
+      <rationale>Dashboard is session-gated, read-only and aggregated through service boundaries.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-012" name="LogReportExport">
+      <sequence>Admin browser -> M-028 -> M-024 -> M-027 -> M-026 -> M-025/M-009 -> sanitized .log response</sequence>
+      <rationale>Report export must apply consistent redaction and filtering outside the UI layer.</rationale>
+    </DataFlow>
+    <DataFlow id="DF-013" name="DestinationResolution">
+      <sequence>User intent -> agent reads get_instructions.directory_contract -> canonical path selected -> write tool -> M-003 -> M-022 validation -> mutation pipeline</sequence>
+      <rationale>Write destination must be derived from Directory Contract, with server-side validation catching non-canonical or deprecated paths.</rationale>
     </DataFlow>
   </DataFlows>
 
@@ -450,6 +680,24 @@
       <verification_refs>V-M-016 V-M-010</verification_refs>
       <rationale>Semantic retrieval is useful after MVP but must degrade cleanly to FTS and not become a core reliability dependency.</rationale>
     </Phase>
+    <Phase id="PH-008" name="AgentUXAndVaultLayout" status="planned" gate="PG-008" gate_passed="false">
+      <step id="STEP-023" module="M-022" status="complete" completed_at="2026-05-10">Implement VaultLayoutService and authoritative Directory Contract resolution.</step>
+      <step id="STEP-024" module="M-021" status="planned">Implement InstructionService and expose get_instructions through M-001.</step>
+      <step id="STEP-025" module="M-023" status="planned">Implement MemBankInitializationService with check_only, dry_run and safe apply.</step>
+      <step id="STEP-026" module="M-001" status="planned">Update MCP server tool surface for get_instructions and membank_init orchestration.</step>
+      <verification_refs>V-M-021 V-M-022 V-M-023 DF-007 DF-008 DF-009 DF-013</verification_refs>
+      <rationale>Agents need exact role-aware directory instructions before autonomous writes can be reliable over a user-specific Obsidian Vault.</rationale>
+    </Phase>
+    <Phase id="PH-009" name="AdminObservabilityAndDebugUX" status="planned" gate="PG-009" gate_passed="false">
+      <step id="STEP-027" module="M-025" status="complete" completed_at="2026-05-10">Implement ProcessEventLogService and queryable process_events storage.</step>
+      <step id="STEP-028" module="M-026" status="planned">Implement LogReportService with filters and sanitized .log export.</step>
+      <step id="STEP-029" module="M-024" status="complete" completed_at="2026-05-10">Implement AdminAuthService with separate login/password sessions.</step>
+      <step id="STEP-030" module="M-027" status="planned">Implement AdminDashboardService read-only aggregation.</step>
+      <step id="STEP-031" module="M-028" status="planned">Implement AdminWebInterface private dashboard routes.</step>
+      <step id="STEP-032" module="M-020" status="planned">Integrate admin web routes beside transport without weakening private network boundary.</step>
+      <verification_refs>V-M-024 V-M-025 V-M-026 V-M-027 V-M-028 DF-010 DF-011 DF-012</verification_refs>
+      <rationale>Operational visibility must be added after core safety boundaries and must remain read-only to avoid expanding mutation risk.</rationale>
+    </Phase>
   </ImplementationPhases>
 
   <RiskRegister id="RISKS-001">
@@ -484,6 +732,22 @@
     <Risk id="R-008" stop_condition="V-M-009">
       <description>Audit trail lost or corrupted.</description>
       <mitigation>Authoritative SQLite/NDJSON audit and LOG.md projection.</mitigation>
+    </Risk>
+    <Risk id="R-009" stop_condition="SC-008">
+      <description>Agent writes into wrong or invented folder because directory structure is inferred from names.</description>
+      <mitigation>Authoritative Directory Contract, get_instructions, deprecated alias denial and destination validation.</mitigation>
+    </Risk>
+    <Risk id="R-010" stop_condition="SC-009">
+      <description>Admin dashboard leaks secrets or raw Vault content through logs or reports.</description>
+      <mitigation>Mandatory redaction in process events, dashboard responses and .log export.</mitigation>
+    </Risk>
+    <Risk id="R-011" stop_condition="SC-010">
+      <description>Admin web interface becomes a direct Vault mutation path.</description>
+      <mitigation>Read-only dashboard service boundary and forbidden M-028 -> M-005/M-009 edges.</mitigation>
+    </Risk>
+    <Risk id="R-012" stop_condition="SC-003">
+      <description>Mutation policy dry_run gate bypassed because _authorize_or_raise hardcodes dry_run=True instead of forwarding the actual call parameter.</description>
+      <mitigation>M-008._authorize_or_raise must accept and forward the actual dry_run parameter to M-003.authorize_operation. Static analysis or contract test must verify that authorize_operation sees the same dry_run value the caller passed.</mitigation>
     </Risk>
   </RiskRegister>
 </GRACEDevelopmentPlan>
