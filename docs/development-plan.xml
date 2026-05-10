@@ -680,11 +680,11 @@
       <verification_refs>V-M-016 V-M-010</verification_refs>
       <rationale>Semantic retrieval is useful after MVP but must degrade cleanly to FTS and not become a core reliability dependency.</rationale>
     </Phase>
-    <Phase id="PH-008" name="AgentUXAndVaultLayout" status="planned" gate="PG-008" gate_passed="false">
+    <Phase id="PH-008" name="AgentUXAndVaultLayout" status="complete" gate="PG-008" gate_passed="true">
       <step id="STEP-023" module="M-022" status="complete" completed_at="2026-05-10">Implement VaultLayoutService and authoritative Directory Contract resolution.</step>
       <step id="STEP-024" module="M-021" status="complete" completed_at="2026-05-10">Implement InstructionService and expose get_instructions through M-001.</step>
       <step id="STEP-025" module="M-023" status="complete" completed_at="2026-05-10">Implement MemBankInitializationService with check_only, dry_run and safe apply.</step>
-      <step id="STEP-026" module="M-001" status="planned">Update MCP server tool surface for get_instructions and membank_init orchestration.</step>
+      <step id="STEP-026" module="M-001" status="complete" completed_at="2026-05-10">Update MCP server tool surface for get_instructions and membank_init orchestration.</step>
       <verification_refs>V-M-021 V-M-022 V-M-023 DF-007 DF-008 DF-009 DF-013</verification_refs>
       <rationale>Agents need exact role-aware directory instructions before autonomous writes can be reliable over a user-specific Obsidian Vault.</rationale>
     </Phase>
@@ -692,7 +692,7 @@
       <step id="STEP-027" module="M-025" status="complete" completed_at="2026-05-10">Implement ProcessEventLogService and queryable process_events storage.</step>
       <step id="STEP-028" module="M-026" status="complete" completed_at="2026-05-10">Implement LogReportService with filters and sanitized .log export.</step>
       <step id="STEP-029" module="M-024" status="complete" completed_at="2026-05-10">Implement AdminAuthService with separate login/password sessions.</step>
-      <step id="STEP-030" module="M-027" status="planned">Implement AdminDashboardService read-only aggregation.</step>
+      <step id="STEP-030" module="M-027" status="complete" completed_at="2026-05-10">Implement AdminDashboardService read-only aggregation.</step>
       <step id="STEP-031" module="M-028" status="planned">Implement AdminWebInterface private dashboard routes.</step>
       <step id="STEP-032" module="M-020" status="planned">Integrate admin web routes beside transport without weakening private network boundary.</step>
       <verification_refs>V-M-024 V-M-025 V-M-026 V-M-027 V-M-028 DF-010 DF-011 DF-012</verification_refs>
