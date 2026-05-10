@@ -32,6 +32,9 @@
         <fn-propose_wiki_update id="M-001-FN-008" />
         <fn-refresh_paths id="M-001-FN-009" />
         <fn-health_check id="M-001-FN-010" />
+        <fn-backup_vault id="M-001-FN-011" />
+        <fn-backup_health id="M-001-FN-012" />
+        <fn-whoami id="M-001-FN-013" />
       </public_interfaces>
       <observability>Must create trace_id and emit tool routing, policy outcome and service result anchors.</observability>
       <rationale>Central orchestration keeps MCP transport thin while preventing service-to-service cycles such as mutation directly refreshing index.</rationale>

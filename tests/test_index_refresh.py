@@ -163,3 +163,19 @@ def test_refresh_index_treats_vault_as_source_of_truth_not_cached_index_state(
     assert result.success is True
     assert path in result.updated_paths
     assert rows[path] == compute_revision(current)
+
+
+def test_startup_reconcile_indexes_wiki_paths_with_derivative_config(
+    temp_vault_root,
+    sample_config_dict,
+):
+    config = _make_config(temp_vault_root, sample_config_dict)
+    wiki_content = "# Wiki\n\nAutomated knowledge base."
+    (temp_vault_root / "70_Wiki" / "auto.md").write_text(wiki_content, encoding="utf-8")
+
+    result = startup_reconcile(PROFILE, config)
+
+    rows = _index_rows(config.index.db_path)
+    assert result.success is True
+    assert "70_Wiki/auto.md" in result.updated_paths
+    assert rows["70_Wiki/auto.md"] == compute_revision(wiki_content)

@@ -113,7 +113,7 @@
     <module_matrix>
       <!-- M-001 MCPServerEntrypoint -->
       <row module="M-001" test_path="tests/test_server.py">
-        <scenario id="M-001-S-001" name="all_12_tools_registered" evidence="ET-DET" />
+        <scenario id="M-001-S-001" name="all_13_tools_registered" evidence="ET-DET" />
         <scenario id="M-001-S-002" name="tool_routing_applies_auth_policy_before_service" evidence="ET-TRACE ET-INT">
           <trace>TA-001 TA-002</trace>
         </scenario>

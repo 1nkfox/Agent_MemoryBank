@@ -24,7 +24,12 @@ from memory_mcp.observability import (
     log_trace_anchor,
     new_trace_id,
 )
-from memory_mcp.policy import authorize_operation
+from memory_mcp.policy import (
+    ALWAYS_DENIED,
+    DRY_RUN_REQUIRED,
+    PERMISSION_MATRIX,
+    authorize_operation,
+)
 from memory_mcp.read_service import read_note as _svc_read_note
 from memory_mcp.retrieval_service import search_notes as _svc_search_notes
 from memory_mcp.wiki_update_service import propose_wiki_update as _svc_propose_wiki_update
@@ -37,6 +42,44 @@ MODULE_BLOCK = "M-001"
 ToolHandler = Callable[..., Any]
 
 tools: dict[str, ToolHandler] = {}
+
+# Internal profile used for post-mutation index refresh.
+# Must have "refresh" permission (admin); this is a server-internal
+# operation, NOT an end-user-requested refresh.
+INTERNAL_REFRESH_PROFILE = "admin"
+
+ROLE_DESCRIPTIONS: dict[str, str] = {
+    "readonly_agent": (
+        "Read-only access to the vault. Can read notes and search the index. "
+        "Cannot create, edit, or delete any content. "
+        "Cannot run backups or manual index refresh. "
+        "Suitable for: querying agents, dashboards, read-only integrations."
+    ),
+    "trusted_writer": (
+        "Read and write access to the vault allowlist. Can create, append, "
+        "edit, and overwrite notes. Can propose wiki updates (read-only diff). "
+        "Cannot run backups or manual index refresh — index is auto-updated "
+        "after each write automatically. "
+        "Suitable for: AI coding agents, note-taking automation, content pipelines."
+    ),
+    "wiki_maintainer": (
+        "Wiki-focused role. Can read, search, and propose wiki updates via "
+        "source-linked diffs. Cannot write directly to the vault or wiki pages. "
+        "All wiki changes are propose-only (reviewed by admin before merge). "
+        "Suitable for: wiki-editing agents, knowledge-base curators."
+    ),
+    "cron_summarizer": (
+        "Scheduled summarization role. Can read, search, and append to notes. "
+        "Cannot overwrite or delete content. Append-only prevents data loss. "
+        "Suitable for: cron jobs, periodic summarization, log aggregation."
+    ),
+    "admin": (
+        "Full administrative access. All read/write operations, promote drafts, "
+        "manual index refresh, backup vault creation, and backup health checks. "
+        "The only role permitted to run git-based vault backups. "
+        "Suitable for: system operators, backup automation, maintenance scripts."
+    ),
+}
 
 tool_schemas: dict[str, dict[str, Any]] = {
     "read_note": {
@@ -162,6 +205,13 @@ tool_schemas: dict[str, dict[str, Any]] = {
     },
     "backup_health": {
         "description": "Check backup repository health",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "whoami": {
+        "description": "Return the caller's profile, permissions, and descriptions of all available roles",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -320,7 +370,7 @@ async def _handler_create_note(
     result = await _svc_create_note(profile, path, content, config, dry_run=dry_run)
 
     if result.success and not dry_run and result.affected_paths:
-        _svc_refresh_paths(profile, result.affected_paths, config)
+        _svc_refresh_paths(INTERNAL_REFRESH_PROFILE, result.affected_paths, config)
 
     return {
         "success": result.success,
@@ -349,7 +399,7 @@ async def _handler_append_note(
     )
 
     if result.success and not dry_run and result.affected_paths:
-        _svc_refresh_paths(profile, result.affected_paths, config)
+        _svc_refresh_paths(INTERNAL_REFRESH_PROFILE, result.affected_paths, config)
 
     return {
         "success": result.success,
@@ -378,7 +428,7 @@ async def _handler_edit_note(
     )
 
     if result.success and not dry_run and result.affected_paths:
-        _svc_refresh_paths(profile, result.affected_paths, config)
+        _svc_refresh_paths(INTERNAL_REFRESH_PROFILE, result.affected_paths, config)
 
     return {
         "success": result.success,
@@ -407,7 +457,7 @@ async def _handler_write_note(
     )
 
     if result.success and not dry_run and result.affected_paths:
-        _svc_refresh_paths(profile, result.affected_paths, config)
+        _svc_refresh_paths(INTERNAL_REFRESH_PROFILE, result.affected_paths, config)
 
     return {
         "success": result.success,
@@ -455,6 +505,32 @@ def _handler_refresh_paths(
         "success": result.success,
         "updated_paths": result.updated_paths,
         "deleted_paths": result.deleted_paths,
+    }
+
+
+def _handler_whoami(
+    identity: AgentIdentity,
+    profile: str,
+    params: dict[str, Any],
+    config: ServerConfig,
+    trace_id: str,
+) -> dict[str, Any]:
+    my_permissions = sorted(PERMISSION_MATRIX.get(profile, set()))
+    roles: dict[str, Any] = {}
+    for role_name, permissions in PERMISSION_MATRIX.items():
+        roles[role_name] = {
+            "description": ROLE_DESCRIPTIONS.get(role_name, ""),
+            "permissions": sorted(permissions),
+        }
+    return {
+        "profile": profile,
+        "key_id": identity.key_id,
+        "permissions": my_permissions,
+        "note": (
+            f"Operations requiring dry_run=True first: {sorted(DRY_RUN_REQUIRED)}. "
+            f"Always denied (MVP): {sorted(ALWAYS_DENIED)}."
+        ),
+        "all_roles": roles,
     }
 
 
@@ -656,6 +732,7 @@ register_tool("refresh_paths", _handler_refresh_paths)
 register_tool("health_check", _handler_health_check)
 register_tool("backup_vault", _handler_backup_vault)
 register_tool("backup_health", _handler_backup_health)
+register_tool("whoami", _handler_whoami)
 
 
 def main() -> None:

@@ -9,6 +9,7 @@ from pathlib import Path
 def temp_vault_root(tmp_path: Path) -> Path:
     """Isolated Vault root with standard subdirs and sample .md files."""
     vault = tmp_path / "vault"
+    (vault / "00_Inbox").mkdir(parents=True)
     (vault / "memory").mkdir(parents=True)
     (vault / "inbox").mkdir(parents=True)
     (vault / "summaries").mkdir(parents=True)
@@ -68,7 +69,7 @@ def sample_config_dict() -> dict:
             }
         },
         "policy": {
-            "allowlist_roots": ["memory/", "inbox/", "summaries/", "70_Wiki/"],
+            "allowlist_roots": ["00_Inbox/", "memory/", "inbox/", "summaries/", "70_Wiki/"],
             "denylist_roots": ["private/", "secrets/"],
             "propose_only_roots": ["70_Wiki/"],
             "allowed_operations": [

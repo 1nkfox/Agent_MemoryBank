@@ -195,7 +195,7 @@ class TestAdminOpsTools:
 
 
 class TestToolRegistration:
-    """Verify all 12 MCP tools from the architecture contract are registered."""
+    """Verify all 13 MCP tools from the architecture contract are registered."""
 
     REQUIRED_TOOLS = {
         "read_note",
@@ -210,6 +210,7 @@ class TestToolRegistration:
         "health_check",
         "backup_vault",
         "backup_health",
+        "whoami",
     }
 
     def test_all_tools_registered(self):
@@ -580,6 +581,74 @@ class TestHealthCheckTool:
         assert "retrieval_service" in result.data["modules"]
         assert "index_refresh" in result.data["modules"]
         assert "wiki_update_service" in result.data["modules"]
+
+
+# ── New: Whoami tool ──────────────────────────────────────────────────
+
+
+class TestWhoamiTool:
+    def test_whoami_returns_profile_and_permissions(
+        self, temp_vault_root, sample_config_dict
+    ):
+        config = _make_config(temp_vault_root, sample_config_dict)
+
+        result = handle_tool_call("whoami", ADMIN_KEY, {}, config)
+
+        assert result.success is True
+        data = result.data
+        assert data["profile"] == "admin"
+        assert "key_id" in data
+        assert "permissions" in data
+        assert "backup" in data["permissions"]
+        assert "refresh" in data["permissions"]
+        assert "all_roles" in data
+        assert "readonly_agent" in data["all_roles"]
+        assert "trusted_writer" in data["all_roles"]
+        assert "admin" in data["all_roles"]
+
+    def test_whoami_trusted_writer_permissions(
+        self, temp_vault_root, sample_config_dict
+    ):
+        config = _make_config(temp_vault_root, sample_config_dict)
+
+        result = handle_tool_call("whoami", TRUSTED_KEY, {}, config)
+
+        assert result.success is True
+        data = result.data
+        assert data["profile"] == "trusted_writer"
+        assert "read" in data["permissions"]
+        assert "create" in data["permissions"]
+        assert "backup" not in data["permissions"]
+        assert "refresh" not in data["permissions"]
+
+    def test_whoami_readonly_agent_permissions(
+        self, temp_vault_root, sample_config_dict
+    ):
+        config = _make_config(temp_vault_root, sample_config_dict)
+
+        result = handle_tool_call("whoami", READONLY_KEY, {}, config)
+
+        assert result.success is True
+        data = result.data
+        assert data["profile"] == "readonly_agent"
+        assert "read" in data["permissions"]
+        assert "search" in data["permissions"]
+        assert "create" not in data["permissions"]
+
+    def test_whoami_includes_role_descriptions(
+        self, temp_vault_root, sample_config_dict
+    ):
+        config = _make_config(temp_vault_root, sample_config_dict)
+
+        result = handle_tool_call("whoami", ADMIN_KEY, {}, config)
+
+        data = result.data
+        roles = data["all_roles"]
+        for role_name in ("admin", "trusted_writer", "readonly_agent"):
+            assert role_name in roles
+            assert "description" in roles[role_name]
+            assert len(roles[role_name]["description"]) > 0
+            assert "permissions" in roles[role_name]
 
 
 # ── New: Refresh paths tool ────────────────────────────────────────────

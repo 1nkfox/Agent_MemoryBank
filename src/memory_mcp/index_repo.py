@@ -135,27 +135,33 @@ def delete_note_index(db_path: str, path: str) -> None:
 
 def search_fts(db_path: str, query: str) -> list[SearchResult]:
     trace_id = new_trace_id()
+    initialize_schema(db_path)
     with _connect(db_path) as conn:
+        fts_used = False
+        rows: list[sqlite3.Row] = []
         if _fts_supported(conn):
-            rows = conn.execute(
-                "SELECT notes.path, "
-                "snippet(notes_fts, 1, '<mark>', '</mark>', '...', 16) AS snippet, "
-                "bm25(notes_fts) AS rank, notes.revision "
-                "FROM notes_fts "
-                "JOIN notes ON notes.path = notes_fts.path "
-                "WHERE notes_fts MATCH ? "
-                "ORDER BY rank",
-                (query,),
-            ).fetchall()
-            fts_used = True
-        else:
+            try:
+                rows = conn.execute(
+                    "SELECT notes.path, "
+                    "snippet(notes_fts, 1, '<mark>', '</mark>', '...', 16) AS snippet, "
+                    "bm25(notes_fts) AS rank, notes.revision "
+                    "FROM notes_fts "
+                    "JOIN notes ON notes.path = notes_fts.path "
+                    "WHERE notes_fts MATCH ? "
+                    "ORDER BY rank",
+                    (query,),
+                ).fetchall()
+                fts_used = True
+            except sqlite3.OperationalError:
+                pass  # FTS5 query parse failure → fall through to LIKE
+
+        if not fts_used:
             like_query = f"%{query}%"
             rows = conn.execute(
                 "SELECT path, content AS snippet, 0.0 AS rank, revision "
                 "FROM notes WHERE content LIKE ? ORDER BY path",
                 (like_query,),
             ).fetchall()
-            fts_used = False
 
     results = [
         SearchResult(

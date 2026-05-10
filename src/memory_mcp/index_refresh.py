@@ -210,8 +210,10 @@ def startup_reconcile(profile: str, config: ServerConfig) -> RefreshResult:
     initialize_schema(config.index.db_path)
 
     updated_paths: list[str] = []
+    wiki_config = _wiki_derivative_refresh_config(config)
     for path in _walk_allowlist_markdown_paths(config):
-        _upsert_path(profile, path, config)
+        effective_config = wiki_config if path.startswith("70_Wiki/") else config
+        _upsert_path(profile, path, effective_config)
         updated_paths.append(path)
 
     result = RefreshResult(success=True, updated_paths=updated_paths, deleted_paths=[])

@@ -36,8 +36,9 @@
         <fn-handle_tool_call_async id="KG-M-001-FN-014" />
         <fn-handle_tool_call id="KG-M-001-FN-015" />
         <fn-main id="KG-M-001-FN-016" />
+        <fn-whoami id="KG-M-001-FN-017" />
       </PublicInterface>
-      <Contracts>All 12 MCP tools wired. Mutation tools return affected_paths and trigger M-014 index refresh (not M-008). Wiki is propose-only. Must invoke auth+policy before service operations. Transports to M-020.</Contracts>
+      <Contracts>All 13 MCP tools wired. Mutation tools return affected_paths and trigger M-014 index refresh (not M-008). Wiki is propose-only. Must invoke auth+policy before service operations. Transports to M-020.</Contracts>
     </M-001>
 
     <M-002 NAME="AuthIdentityService" TYPE="CORE_LOGIC" verification-ref="V-M-002">

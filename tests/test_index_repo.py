@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 
+import memory_mcp.index_repo as repo
 from memory_mcp.index_repo import (
     initialize_schema,
     search_fts,
@@ -85,6 +86,25 @@ def test_search_fts_returns_matching_rows(tmp_path, caplog):
     assert [result.path for result in results] == ["memory/apples.md"]
     assert results[0].revision == "rev-a"
     assert "apple" in results[0].snippet.lower()
+    assert "index.fts.query.completed" in [entry.get("event") for entry in _parse_logs(caplog)]
+
+
+def test_search_fts_fallback_on_fts_unavailable(tmp_path, caplog):
+    caplog.set_level(logging.DEBUG)
+    db_path = str(tmp_path / "index.db")
+    initialize_schema(db_path)
+    upsert_note_index(db_path, "memory/test.md", "Apple banana cherry.", "rev-a")
+
+    fts_supported_original = repo._fts_supported
+    repo._fts_supported = lambda conn: False
+    try:
+        results = search_fts(db_path, "banana")
+    finally:
+        repo._fts_supported = fts_supported_original
+
+    assert len(results) == 1
+    assert results[0].path == "memory/test.md"
+    assert "banana" in results[0].snippet.lower()
     assert "index.fts.query.completed" in [entry.get("event") for entry in _parse_logs(caplog)]
 
 
