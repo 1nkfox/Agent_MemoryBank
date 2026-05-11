@@ -13,6 +13,7 @@ from memory_mcp.observability import (
     log_trace_anchor,
     new_trace_id,
 )
+from memory_mcp.process_event_log import ProcessEvent, record_process_event
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,21 @@ def run_server(config: ServerConfig) -> None:
         trace_id=trace_id, module=MODULE, function="run_server", block=MODULE_BLOCK,
         data={"host": config.server.host, "port": config.server.port},
     )
+
+    db_path = config.process_event_db_path or ""
+    if db_path:
+        event = ProcessEvent(
+            event_type="transport.started",
+            category="boot",
+            severity="INFO",
+            agent_id="system",
+            trace_id=trace_id,
+            message=f"Transport starting on {config.server.host}:{config.server.port}",
+        )
+        try:
+            record_process_event(db_path, event)
+        except Exception:
+            pass
 
     app = create_app(config)
     web.run_app(
