@@ -16,8 +16,8 @@ from memory_mcp.backup_service import backup_vault as _svc_backup_vault
 from memory_mcp.config import ServerConfig
 from memory_mcp.draft_promotion_service import promote_note as _svc_promote_note
 from memory_mcp.index_refresh import refresh_paths as _svc_refresh_paths
-from memory_mcp.instruction_service import InstructionPacket, get_instructions as _svc_get_instructions
-from memory_mcp.membank_init_service import MemBankInitResult, membank_init as _svc_membank_init
+from memory_mcp.instruction_service import get_instructions as _svc_get_instructions
+from memory_mcp.membank_init_service import membank_init as _svc_membank_init
 from memory_mcp.mutation_service import append_note as _svc_append_note
 from memory_mcp.mutation_service import create_note as _svc_create_note
 from memory_mcp.mutation_service import edit_note as _svc_edit_note
