@@ -299,12 +299,13 @@ async def render_dashboard_page(request: web.Request) -> web.Response:
     directory_contract = request.app.get("admin_directory_contract", None)
     config = request.app.get("admin_config", None)
 
+    audit_db = request.app.get("admin_audit_db", "")
     try:
         summary: DashboardSummary = get_dashboard_summary(
             db, vault_root, directory_contract, trace_id, config
         )
         recent_events: list[Event] = get_recent_events(
-            db, limit=50, trace_id=trace_id
+            db, limit=50, trace_id=trace_id, audit_db=audit_db,
         )
     except Exception:
         summary = DashboardSummary(
@@ -369,13 +370,14 @@ async def _handle_events(request: web.Request) -> web.Response:
     _require_session(request, trace_id)
 
     db = request.app.get("admin_db", "")
+    audit_db = request.app.get("admin_audit_db", "")
     limit = request.query.get("limit", "50")
     try:
         limit_int = int(limit)
     except (ValueError, TypeError):
         limit_int = 50
 
-    events = get_recent_events(db, limit=limit_int, trace_id=trace_id)
+    events = get_recent_events(db, limit=limit_int, trace_id=trace_id, audit_db=audit_db)
 
     result = [
         {

@@ -359,10 +359,60 @@ def get_dashboard_summary(
     )
 
 
+def _query_audit_events(
+    audit_db: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    try:
+        conn = sqlite3.connect(audit_db)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS audit_log ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "event_id TEXT NOT NULL, "
+            "timestamp TEXT NOT NULL, "
+            "agent_id TEXT, "
+            "operation TEXT, "
+            "path TEXT, "
+            "old_revision TEXT, "
+            "new_revision TEXT, "
+            "dry_run INTEGER DEFAULT 0, "
+            "policy_profile TEXT, "
+            "result TEXT, "
+            "affected_paths TEXT, "
+            "trace_id TEXT"
+            ")"
+        )
+        rows = conn.execute(
+            "SELECT id, event_id, timestamp, agent_id, operation, path, result "
+            "FROM audit_log ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        return [
+            {
+                "id": row["id"],
+                "event_type": row.get("operation", "audit"),
+                "category": "audit",
+                "severity": "INFO",
+                "agent_id": row["agent_id"] or "",
+                "timestamp": row["timestamp"],
+                "path": row["path"] or "",
+                "message": f"Operation: {row['operation']} — {row['result']}",
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
 def get_recent_events(
     db: sqlite3.Connection | str,
     limit: int,
     trace_id: str,
+    audit_db: str = "",
 ) -> list[Event]:
     request_trace = trace_id or new_trace_id()
 
@@ -389,8 +439,16 @@ def get_recent_events(
         )
         return []
 
+    audit_events: list[dict[str, Any]] = []
+    if audit_db:
+        audit_events = _query_audit_events(audit_db, limit)
+
+    all_raw: list[dict[str, Any]] = raw_events + audit_events
+    all_raw.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    all_raw = all_raw[:limit]
+
     result: list[Event] = []
-    for raw in raw_events:
+    for raw in all_raw:
         safe = _sanitize_event_for_dashboard({
             "id": raw.get("id", 0),
             "event_type": raw.get("event_type", ""),
@@ -419,7 +477,7 @@ def get_recent_events(
         module=MODULE,
         function="get_recent_events",
         block=MODULE_BLOCK,
-        data={"limit": limit, "returned": len(result)},
+        data={"limit": limit, "returned": len(result), "audit_events": len(audit_events)},
     )
 
     return result
