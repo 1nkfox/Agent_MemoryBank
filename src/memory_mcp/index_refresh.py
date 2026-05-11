@@ -7,8 +7,14 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from memory_mcp.config import ServerConfig
-from memory_mcp.index_repo import delete_note_index, initialize_schema, upsert_note_index
-from memory_mcp.markdown_parser import parse_markdown
+from memory_mcp.embedding_service import embed_chunks
+from memory_mcp.index_repo import (
+    delete_note_index,
+    initialize_schema,
+    upsert_note_chunks,
+    upsert_note_index,
+)
+from memory_mcp.markdown_parser import chunk_note, parse_markdown
 from memory_mcp.observability import ErrorCode, log_trace_anchor, new_trace_id
 from memory_mcp.policy import authorize_operation
 from memory_mcp.vault_fs import (
@@ -88,6 +94,80 @@ def _authorize_refresh(profile: str, path: str, config: ServerConfig) -> None:
         )
 
 
+def _log_vector_reindex_started(trace_id: str, function: str) -> None:
+    log_trace_anchor(
+        "INFO",
+        "index.vector.reindex.started",
+        trace_id=trace_id,
+        module=MODULE,
+        function=function,
+        block=MODULE_BLOCK,
+        data={},
+    )
+
+
+def _log_vector_reindex_completed(trace_id: str, function: str, path_count: int) -> None:
+    log_trace_anchor(
+        "INFO",
+        "index.vector.reindex.completed",
+        trace_id=trace_id,
+        module=MODULE,
+        function=function,
+        block=MODULE_BLOCK,
+        data={"path_count": path_count},
+    )
+
+
+def _generate_and_store_embeddings(
+    path: str,
+    content: str,
+    revision: str,
+    config: ServerConfig,
+) -> None:
+    if config.vector.backend == "disabled":
+        return
+    if not config.embedding.api_base or not config.embedding.api_key_env:
+        return
+
+    chunks = chunk_note(content, path=path, revision=revision)
+    chunk_dicts = [
+        {
+            "chunk_id": c["chunk_id"],
+            "text": c["text"],
+            "path": c["path"],
+            "revision": c["revision"],
+            "position": c.get("position", 0),
+        }
+        for c in chunks
+    ]
+
+    if not chunk_dicts:
+        return
+
+    embedded = embed_chunks(
+        chunk_dicts,
+        config.embedding.api_base,
+        config.embedding.api_key_env,
+        config.embedding.model,
+        config.embedding.dimensions,
+        config.embedding.batch_size,
+    )
+
+    chunk_payloads = [
+        {
+            "path": e.path,
+            "chunk_id": e.chunk_id,
+            "chunk_text": e.chunk_text,
+            "revision": e.revision,
+            "embedding": e.embedding,
+        }
+        for e in embedded if e.embedding
+    ]
+
+    if chunk_payloads:
+        upsert_note_chunks(config.index.db_path, path, chunk_payloads)
+
+
 def _path_exists(config: ServerConfig, path: str) -> bool:
     try:
         resolved = resolve_vault_path(config.vault.root, path)
@@ -116,6 +196,7 @@ def _upsert_path(profile: str, path: str, config: ServerConfig) -> None:
         revision,
         _metadata_from_content(content),
     )
+    _generate_and_store_embeddings(path, content, revision, config)
 
 
 def _walk_allowlist_markdown_paths(config: ServerConfig) -> list[str]:
@@ -223,3 +304,25 @@ def startup_reconcile(profile: str, config: ServerConfig) -> RefreshResult:
 
 def refresh_index(profile: str, config: ServerConfig) -> RefreshResult:
     return startup_reconcile(profile, config)
+
+
+def reindex_all_vectors(profile: str, config: ServerConfig) -> RefreshResult:
+    trace_id = new_trace_id()
+    _log_vector_reindex_started(trace_id, "reindex_all_vectors")
+
+    all_paths = _walk_allowlist_markdown_paths(config)
+    updated_paths: list[str] = []
+
+    for path in all_paths:
+        try:
+            _authorize_refresh(profile, path, config)
+            content = read_file(config.vault.root, path)
+            revision = compute_revision(content)
+            _generate_and_store_embeddings(path, content, revision, config)
+            updated_paths.append(path)
+        except Exception:
+            continue
+
+    result = RefreshResult(success=True, updated_paths=updated_paths, deleted_paths=[])
+    _log_vector_reindex_completed(trace_id, "reindex_all_vectors", len(updated_paths))
+    return result

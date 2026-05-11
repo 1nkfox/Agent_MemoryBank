@@ -10,7 +10,13 @@ from pathlib import Path
 from memory_mcp.config import load_config
 from memory_mcp.index_repo import initialize_schema, upsert_note_index
 from memory_mcp import index_refresh
-from memory_mcp.index_refresh import refresh_index, refresh_paths, refresh_wiki_folder, startup_reconcile
+from memory_mcp.index_refresh import (
+    reindex_all_vectors,
+    refresh_index,
+    refresh_paths,
+    refresh_wiki_folder,
+    startup_reconcile,
+)
 from memory_mcp.vault_fs import compute_revision
 
 PROFILE = "admin"
@@ -179,3 +185,68 @@ def test_startup_reconcile_indexes_wiki_paths_with_derivative_config(
     assert result.success is True
     assert "70_Wiki/auto.md" in result.updated_paths
     assert rows["70_Wiki/auto.md"] == compute_revision(wiki_content)
+
+
+def test_reindex_all_vectors_skips_when_backend_disabled(temp_vault_root, sample_config_dict, caplog, monkeypatch):
+    caplog.set_level(logging.DEBUG)
+    config = _make_config(temp_vault_root, sample_config_dict)
+
+    call_count = 0
+
+    def fake_embed_chunks(chunks, api_base, api_key_env, model, dimensions, batch_size=100):
+        nonlocal call_count
+        call_count += 1
+        return []
+
+    monkeypatch.setattr("memory_mcp.index_refresh.embed_chunks", fake_embed_chunks)
+
+    result = reindex_all_vectors(PROFILE, config)
+
+    assert result.success is True
+    assert call_count == 0
+    events = [entry.get("event") for entry in _parse_logs(caplog)]
+    assert "index.vector.reindex.started" in events
+    assert "index.vector.reindex.completed" in events
+
+
+def test_reindex_all_vectors_processes_with_vector_enabled(temp_vault_root, sample_config_dict, caplog, monkeypatch):
+    caplog.set_level(logging.DEBUG)
+    config = _make_config(temp_vault_root, sample_config_dict)
+    config.vector.backend = "sqlite_vec"
+    config.embedding.api_base = "http://localhost:9999"
+    config.embedding.api_key_env = "TEST_EMBED_KEY"
+    monkeypatch.setenv("TEST_EMBED_KEY", "sk-test-key")
+
+    call_count = 0
+
+    def fake_embed_chunks(chunks, api_base, api_key_env, model, dimensions, batch_size=100):
+        nonlocal call_count
+        call_count += 1
+        from memory_mcp.embedding_service import ChunkEmbedding
+        return [
+            ChunkEmbedding(
+                path=c["path"],
+                chunk_id=c["chunk_id"],
+                chunk_text=c["text"],
+                embedding=[0.1] * 1536,
+                revision=c["revision"],
+            )
+            for c in chunks
+        ]
+
+    upsert_calls = []
+
+    def fake_upsert_chunks(db_path, path, chunks):
+        upsert_calls.append((path, len(chunks)))
+
+    monkeypatch.setattr("memory_mcp.index_refresh.embed_chunks", fake_embed_chunks)
+    monkeypatch.setattr("memory_mcp.index_refresh.upsert_note_chunks", fake_upsert_chunks)
+
+    result = reindex_all_vectors(PROFILE, config)
+
+    assert result.success is True
+    assert call_count >= 1
+    assert len(upsert_calls) >= 1
+    events = [entry.get("event") for entry in _parse_logs(caplog)]
+    assert "index.vector.reindex.started" in events
+    assert "index.vector.reindex.completed" in events
