@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import struct
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +22,19 @@ class SearchResult:
     snippet: str
     rank: float
     revision: str
+
+
+@dataclass
+class VectorSearchResult:
+    path: str
+    chunk_id: str
+    chunk_text: str
+    score: float
+    revision: str
+
+
+def _vec0_supported(conn: sqlite3.Connection) -> bool:
+    return _table_exists(conn, "note_chunks_vec")
 
 
 def _utc_now() -> str:
@@ -58,8 +72,20 @@ def _fts_supported(conn: sqlite3.Connection) -> bool:
     return _table_exists(conn, "notes_fts")
 
 
+def _create_vec_table(conn: sqlite3.Connection) -> bool:
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS note_chunks_vec "
+            "USING vec0(chunk_embedding float[1536])"
+        )
+    except (sqlite3.OperationalError, Exception):
+        return False
+    return True
+
+
 def initialize_schema(db_path: str) -> None:
     trace_id = new_trace_id()
+    vec_enabled = False
     with _connect(db_path) as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS notes ("
@@ -71,6 +97,18 @@ def initialize_schema(db_path: str) -> None:
             ")"
         )
         conn.execute(
+            "CREATE TABLE IF NOT EXISTS note_chunks ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "path TEXT NOT NULL, "
+            "chunk_id TEXT NOT NULL, "
+            "chunk_text TEXT NOT NULL, "
+            "revision TEXT NOT NULL"
+            ")"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_note_chunks_path ON note_chunks(path)"
+        )
+        conn.execute(
             "CREATE TABLE IF NOT EXISTS index_state ("
             "path TEXT PRIMARY KEY, "
             "revision TEXT NOT NULL, "
@@ -78,6 +116,7 @@ def initialize_schema(db_path: str) -> None:
             ")"
         )
         fts_enabled = _create_fts_table(conn)
+        vec_enabled = _create_vec_table(conn)
 
     log_trace_anchor(
         level="INFO",
@@ -86,7 +125,7 @@ def initialize_schema(db_path: str) -> None:
         module=MODULE,
         function="initialize_schema",
         block=MODULE_BLOCK,
-        data={"db_path": db_path, "fts_enabled": fts_enabled},
+        data={"db_path": db_path, "fts_enabled": fts_enabled, "vec_enabled": vec_enabled},
     )
 
 
@@ -131,6 +170,137 @@ def delete_note_index(db_path: str, path: str) -> None:
         conn.execute("DELETE FROM index_state WHERE path = ?", (path,))
         if _fts_supported(conn):
             conn.execute("DELETE FROM notes_fts WHERE path = ?", (path,))
+
+
+def upsert_note_chunks(
+    db_path: str,
+    path: str,
+    chunks: list[dict[str, Any]],
+) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM note_chunks WHERE path = ?", (path,))
+        if _vec0_supported(conn):
+            chunk_rows = conn.execute(
+                "SELECT id FROM note_chunks_vec WHERE rowid IN "
+                "(SELECT id FROM note_chunks WHERE path = ?)",
+                (path,),
+            ).fetchall()
+            for row in chunk_rows:
+                conn.execute("DELETE FROM note_chunks_vec WHERE rowid = ?", (row["id"],))
+
+        for chunk in chunks:
+            embedding = chunk.get("embedding", [])
+            chunk_text = chunk.get("chunk_text", chunk.get("text", ""))
+            chunk_id = chunk.get("chunk_id", "")
+            revision = chunk.get("revision", "")
+
+            cursor = conn.execute(
+                "INSERT INTO note_chunks (path, chunk_id, chunk_text, revision) "
+                "VALUES (?, ?, ?, ?)",
+                (path, chunk_id, chunk_text, revision),
+            )
+            chunk_row_id = cursor.lastrowid
+
+            if _vec0_supported(conn) and embedding and len(embedding) == 1536:
+                vec_blob = struct.pack(f"{len(embedding)}f", *embedding)
+                conn.execute(
+                    "INSERT INTO note_chunks_vec (rowid, chunk_embedding) VALUES (?, ?)",
+                    (chunk_row_id, vec_blob),
+                )
+
+    trace_id = new_trace_id()
+    log_trace_anchor(
+        level="INFO",
+        event="index.vector.upsert.completed",
+        trace_id=trace_id,
+        module=MODULE,
+        function="upsert_note_chunks",
+        block=MODULE_BLOCK,
+        data={"path": path, "chunk_count": len(chunks)},
+    )
+
+
+def delete_note_chunks(db_path: str, path: str) -> None:
+    with _connect(db_path) as conn:
+        if _vec0_supported(conn):
+            chunk_ids = conn.execute(
+                "SELECT id FROM note_chunks WHERE path = ?",
+                (path,),
+            ).fetchall()
+            for row in chunk_ids:
+                conn.execute("DELETE FROM note_chunks_vec WHERE rowid = ?", (row["id"],))
+        conn.execute("DELETE FROM note_chunks WHERE path = ?", (path,))
+
+    trace_id = new_trace_id()
+    log_trace_anchor(
+        level="INFO",
+        event="index.vector.delete.completed",
+        trace_id=trace_id,
+        module=MODULE,
+        function="delete_note_chunks",
+        block=MODULE_BLOCK,
+        data={"path": path},
+    )
+
+
+def query_similar(
+    db_path: str,
+    embedding: list[float],
+    limit: int = 5,
+) -> list[VectorSearchResult]:
+    trace_id = new_trace_id()
+    results: list[VectorSearchResult] = []
+
+    with _connect(db_path) as conn:
+        if not _vec0_supported(conn):
+            log_trace_anchor(
+                level="INFO",
+                event="index.vector.query.completed",
+                trace_id=trace_id,
+                module=MODULE,
+                function="query_similar",
+                block=MODULE_BLOCK,
+                data={"result_count": 0, "vec_available": False},
+            )
+            return results
+
+        if not embedding:
+            return results
+
+        vec_blob = struct.pack(f"{len(embedding)}f", *embedding)
+        try:
+            rows = conn.execute(
+                "SELECT nc.path, nc.chunk_id, nc.chunk_text, nc.revision, v.distance "
+                "FROM note_chunks_vec v "
+                "JOIN note_chunks nc ON nc.id = v.rowid "
+                "WHERE v.chunk_embedding MATCH ? "
+                "ORDER BY v.distance "
+                "LIMIT ?",
+                (vec_blob, limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+
+        for row in rows:
+            results.append(VectorSearchResult(
+                path=row["path"],
+                chunk_id=row["chunk_id"],
+                chunk_text=row["chunk_text"],
+                score=float(1.0 - row["distance"]) if row["distance"] is not None else 0.0,
+                revision=row["revision"],
+            ))
+
+    log_trace_anchor(
+        level="INFO",
+        event="index.vector.query.completed",
+        trace_id=trace_id,
+        module=MODULE,
+        function="query_similar",
+        block=MODULE_BLOCK,
+        data={"result_count": len(results), "vec_available": True},
+    )
+
+    return results
 
 
 def search_fts(db_path: str, query: str) -> list[SearchResult]:

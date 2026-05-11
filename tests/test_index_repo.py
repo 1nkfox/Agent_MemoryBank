@@ -8,8 +8,11 @@ import sqlite3
 
 import memory_mcp.index_repo as repo
 from memory_mcp.index_repo import (
+    VectorSearchResult,
     initialize_schema,
+    query_similar,
     search_fts,
+    upsert_note_chunks,
     upsert_note_index,
 )
 
@@ -121,3 +124,107 @@ def test_stale_index_state_detectable_when_revision_differs(tmp_path):
         ).fetchone()[0]
 
     assert indexed_revision != vault_revision
+
+
+def test_upsert_note_chunks_stores_and_retrieves(tmp_path, caplog):
+    caplog.set_level(logging.DEBUG)
+    db_path = str(tmp_path / "index.db")
+    initialize_schema(db_path)
+
+    chunks = [
+        {"chunk_id": "intro", "text": "Introduction content", "revision": "r1", "embedding": [0.1] * 1536},
+        {"chunk_id": "details", "text": "Details content", "revision": "r1", "embedding": [0.2] * 1536},
+    ]
+
+    upsert_note_chunks(db_path, "memory/test.md", chunks)
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT chunk_id, chunk_text, revision FROM note_chunks WHERE path = ? ORDER BY id",
+            ("memory/test.md",),
+        ).fetchall()
+
+    assert len(rows) == 2
+    assert rows[0][0] == "intro"
+    assert rows[0][1] == "Introduction content"
+    assert rows[1][0] == "details"
+    assert "index.vector.upsert.completed" in [entry.get("event") for entry in _parse_logs(caplog)]
+
+
+def test_upsert_note_chunks_replaces_prior_chunks(tmp_path):
+    db_path = str(tmp_path / "index.db")
+    initialize_schema(db_path)
+
+    chunks_v1 = [
+        {"chunk_id": "h1", "text": "Version 1", "revision": "r1", "embedding": [0.1] * 1536},
+    ]
+    upsert_note_chunks(db_path, "memory/test.md", chunks_v1)
+
+    chunks_v2 = [
+        {"chunk_id": "h1", "text": "Version 2", "revision": "r2", "embedding": [0.3] * 1536},
+    ]
+    upsert_note_chunks(db_path, "memory/test.md", chunks_v2)
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT chunk_text, revision FROM note_chunks WHERE path = ?",
+            ("memory/test.md",),
+        ).fetchall()
+
+    assert len(rows) == 1
+    assert rows[0][0] == "Version 2"
+    assert rows[0][1] == "r2"
+
+
+def test_delete_note_chunks_removes_chunks(tmp_path):
+    db_path = str(tmp_path / "index.db")
+    initialize_schema(db_path)
+
+    chunks = [
+        {"chunk_id": "h1", "text": "Content", "revision": "r1", "embedding": [0.1] * 1536},
+    ]
+    upsert_note_chunks(db_path, "memory/test.md", chunks)
+    repo.delete_note_chunks(db_path, "memory/test.md")
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM note_chunks WHERE path = ?",
+            ("memory/test.md",),
+        ).fetchone()
+    assert rows[0] == 0
+
+
+def test_query_similar_returns_empty_when_no_vec_table(tmp_path, caplog):
+    caplog.set_level(logging.DEBUG)
+    db_path = str(tmp_path / "index.db")
+    initialize_schema(db_path)
+
+    results = query_similar(db_path, [0.1] * 1536, limit=5)
+
+    assert results == []
+    assert isinstance(results, list)
+
+
+def test_query_similar_returns_empty_for_empty_embedding(tmp_path):
+    db_path = str(tmp_path / "index.db")
+    initialize_schema(db_path)
+
+    results = query_similar(db_path, [], limit=5)
+
+    assert results == []
+
+
+def test_vector_search_result_dataclass():
+    result = VectorSearchResult(
+        path="memory/test.md",
+        chunk_id="intro",
+        chunk_text="Introduction text",
+        score=0.95,
+        revision="abc123",
+    )
+
+    assert result.path == "memory/test.md"
+    assert result.chunk_id == "intro"
+    assert result.chunk_text == "Introduction text"
+    assert result.score == 0.95
+    assert result.revision == "abc123"
