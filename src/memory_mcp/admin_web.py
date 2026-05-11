@@ -507,10 +507,8 @@ def create_admin_routes(
 
     if config is not None:
         app["admin_config"] = config
-        if hasattr(config, "db"):
-            app["admin_db"] = config.db
-        else:
-            app["admin_db"] = ""
+        app["admin_db"] = getattr(config, "process_event_db_path", "") or ""
+        app["admin_audit_db"] = getattr(config, "audit", None) and getattr(config.audit, "audit_db_path", "") or ""
         if hasattr(config, "vault"):
             app["admin_vault_root"] = config.vault.root
         else:
