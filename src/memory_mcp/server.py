@@ -27,6 +27,7 @@ from memory_mcp.observability import (
     log_trace_anchor,
     new_trace_id,
 )
+from memory_mcp.process_event_log import ProcessEvent, record_process_event
 from memory_mcp.policy import (
     ALWAYS_DENIED,
     DRY_RUN_REQUIRED,
@@ -248,6 +249,38 @@ class ToolResult:
     trace_id: str = ""
 
 
+def _record_process_event(
+    event_type: str,
+    category: str,
+    severity: str,
+    agent_id: str,
+    trace_id: str,
+    path: str = "",
+    message: str = "",
+    error_code: str = "",
+    config: ServerConfig | None = None,
+) -> None:
+    if config is None:
+        return
+    db_path = config.process_event_db_path or ""
+    if not db_path:
+        return
+    event = ProcessEvent(
+        event_type=event_type,
+        category=category,
+        severity=severity,
+        agent_id=agent_id,
+        trace_id=trace_id,
+        path=path,
+        message=message,
+        error_code=error_code,
+    )
+    try:
+        record_process_event(db_path, event)
+    except Exception:
+        pass
+
+
 def register_tool(name: str, handler: ToolHandler) -> None:
     tools[name] = handler
 
@@ -274,6 +307,15 @@ def health_check(config: ServerConfig) -> dict[str, Any]:
             "audit_log",
             "markdown_parser",
             "vector_adapter",
+            "embedding_service",
+            "instruction_service",
+            "vault_layout",
+            "membank_init_service",
+            "admin_auth",
+            "admin_dashboard_service",
+            "admin_web",
+            "process_event_log",
+            "log_report_service",
         ],
     }
 
@@ -654,6 +696,9 @@ async def handle_tool_call_async(
         data={"tool_name": tool_name},
     )
 
+    _record_process_event("mcp_request.received", "mcp_request", "INFO", "", trace_id,
+                          message=f"Tool: {tool_name}", config=config)
+
     if tool_name not in tools:
         log_trace_anchor(
             "ERROR",
@@ -665,6 +710,8 @@ async def handle_tool_call_async(
             data={"tool_name": tool_name, "reason": "tool not registered"},
             error_code="UNKNOWN_TOOL",
         )
+        _record_process_event("mcp_request.failed", "mcp_request", "ERROR", "", trace_id,
+                              message=f"Unknown tool: {tool_name}", error_code="UNKNOWN_TOOL", config=config)
         return ToolResult(success=False, error_code="UNKNOWN_TOOL", trace_id=trace_id)
 
     try:
@@ -680,6 +727,8 @@ async def handle_tool_call_async(
             data={"tool_name": tool_name, "reason": str(exc)},
             error_code=exc.error_code,
         )
+        _record_process_event("mcp_request.failed", "mcp_request", "ERROR", "", trace_id,
+                              message=str(exc), error_code=exc.error_code, config=config)
         return ToolResult(success=False, error_code=exc.error_code, trace_id=trace_id)
 
     handler = tools[tool_name]
@@ -700,6 +749,8 @@ async def handle_tool_call_async(
             data={"tool_name": tool_name, "reason": str(exc)},
             error_code=error_code,
         )
+        _record_process_event("mcp_request.failed", "mcp_request", "ERROR", profile, trace_id,
+                              message=str(exc), error_code=error_code, config=config)
         return ToolResult(success=False, error_code=error_code, trace_id=trace_id)
 
     log_trace_anchor(
@@ -711,6 +762,9 @@ async def handle_tool_call_async(
         block=MODULE_BLOCK,
         data={"tool_name": tool_name},
     )
+
+    _record_process_event("mcp_request.completed", "mcp_request", "INFO", profile, trace_id,
+                          message=f"Tool: {tool_name}", config=config)
 
     return ToolResult(success=True, data=result_data, trace_id=trace_id)
 
@@ -848,9 +902,15 @@ def main() -> None:
 
     config = load_config(config_dict)
 
+    startup_trace = new_trace_id()
+    _record_process_event("server.startup", "boot", "INFO", "system", startup_trace,
+                          message=f"Server starting on {config.server.host}:{config.server.port}", config=config)
+
     transport_mode = os.environ.get("MEMORY_MCP_TRANSPORT", "http").lower()
 
     if transport_mode in ("check", "dry-run"):
+        _record_process_event("server.check", "boot", "INFO", "system", startup_trace,
+                              message="Check mode - transport skipped", config=config)
         health = health_check(config)
         print(f"Status: {health['status']}")
         print(f"Registered tools ({len(tools)}): {', '.join(sorted(tools.keys()))}")
@@ -862,10 +922,14 @@ def main() -> None:
     try:
         from memory_mcp.transport import run_server
 
+        _record_process_event("server.starting_transport", "boot", "INFO", "system", startup_trace,
+                              message=f"Starting HTTP transport on {config.server.host}:{config.server.port}", config=config)
         print(f"Starting MCP server on {config.server.host}:{config.server.port}")
         print(f"Tools: {', '.join(sorted(tools.keys()))}")
         run_server(config)
     except ImportError:
+        _record_process_event("server.startup_failed", "boot", "ERROR", "system", startup_trace,
+                              message="aiohttp not installed", error_code="IMPORT_ERROR", config=config)
         print("ERROR: aiohttp is required for HTTP transport.", file=sys.stderr)
         print("Install with: pip install aiohttp", file=sys.stderr)
         sys.exit(1)

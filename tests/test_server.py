@@ -556,6 +556,15 @@ class TestHealthCheckTool:
         "audit_log",
         "markdown_parser",
         "vector_adapter",
+        "embedding_service",
+        "instruction_service",
+        "vault_layout",
+        "membank_init_service",
+        "admin_auth",
+        "admin_dashboard_service",
+        "admin_web",
+        "process_event_log",
+        "log_report_service",
     }
 
     def test_health_check_returns_all_modules(
