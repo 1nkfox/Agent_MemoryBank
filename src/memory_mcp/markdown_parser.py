@@ -234,6 +234,78 @@ def validate_markdown_shape(content: str) -> bool:
     return True
 
 
+def chunk_note(
+    content: str,
+    path: str = "",
+    revision: str = "",
+    min_chunk_length: int = 20,
+) -> list[dict[str, Any]]:
+    trace_id = new_trace_id()
+
+    sections = extract_sections(content)
+    chunks: list[dict[str, Any]] = []
+
+    for i, section in enumerate(sections):
+        _collect_chunks(section, chunks, path, revision, i)
+
+    if not chunks:
+        body = content.strip()
+        if body:
+            chunks.append({
+                "chunk_id": "body",
+                "heading": "",
+                "text": body,
+                "path": path,
+                "revision": revision,
+                "position": 0,
+            })
+    elif len(chunks) == 1 and chunks[0]["heading"] == "" and not chunks[0]["text"].strip():
+        chunks[0]["text"] = content.strip()
+
+    filtered = [c for c in chunks if len(c["text"].strip()) >= min_chunk_length]
+
+    log_trace_anchor(
+        level="INFO",
+        event="markdown.chunked",
+        trace_id=trace_id,
+        module="M-015",
+        function="chunk_note",
+        block="PARSER",
+        data={
+            "path": path,
+            "total_chunks": len(chunks),
+            "filtered_chunks": len(filtered),
+            "min_chunk_length": min_chunk_length,
+        },
+    )
+
+    return filtered
+
+
+def _collect_chunks(
+    section: Section,
+    chunks: list[dict[str, Any]],
+    path: str,
+    revision: str,
+    position: int,
+    parent_heading: str = "",
+) -> None:
+    full_heading = f"{parent_heading} > {section.heading}".lstrip(" > ") if section.heading else parent_heading
+    chunk_id = full_heading.lower().replace(" ", "_").replace(">", "").strip("_") or f"section_{position}"
+    text = section.content or section.heading or ""
+    if text.strip():
+        chunks.append({
+            "chunk_id": chunk_id,
+            "heading": full_heading,
+            "text": text,
+            "path": path,
+            "revision": revision,
+            "position": position,
+        })
+    for sub in section.subsections:
+        _collect_chunks(sub, chunks, path, revision, position + 1, full_heading)
+
+
 def parse_markdown(content: str) -> ParsedMarkdown:
     trace_id = new_trace_id()
 

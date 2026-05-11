@@ -6,6 +6,7 @@ import logging
 from memory_mcp.markdown_parser import (
     ParsedMarkdown,
     Section,
+    chunk_note,
     extract_sections,
     parse_markdown,
     validate_markdown_shape,
@@ -452,3 +453,62 @@ def _sections_equal(a: list[Section], b: list[Section]) -> bool:
         if not _sections_equal(sa.subsections, sb.subsections):
             return False
     return True
+
+
+def test_chunk_note_splits_by_headings():
+    content = """---
+title: Chunk Test
+---
+
+# Introduction
+
+This is the intro section.
+
+## Details
+
+More detailed content here.
+
+### Sub Detail
+
+Very specific detail.
+
+## Summary
+
+The conclusion.
+"""
+    chunks = chunk_note(content, path="memory/test.md", revision="abc123", min_chunk_length=1)
+
+    assert len(chunks) >= 2
+    chunk_ids = [c["chunk_id"] for c in chunks]
+    assert "introduction" in chunk_ids or "details" in chunk_ids or "summary" in chunk_ids
+    for c in chunks:
+        assert c["path"] == "memory/test.md"
+        assert c["revision"] == "abc123"
+        assert "chunk_id" in c
+        assert "text" in c
+
+
+def test_chunk_note_returns_body_for_no_headings():
+    content = "Just some plain text without any markdown headings."
+    chunks = chunk_note(content, path="memory/plain.md", revision="def456", min_chunk_length=1)
+
+    assert len(chunks) == 1
+    assert chunks[0]["path"] == "memory/plain.md"
+
+
+def test_chunk_note_min_length_filters():
+    content = "# A\n\nshort\n\n# B\n\nlonger content here for embedding"
+    chunks = chunk_note(content, path="memory/filter.md", revision="ghi789", min_chunk_length=10)
+
+    chunk_texts = [c["text"] for c in chunks]
+    assert len(chunk_texts) >= 1
+
+
+def test_chunk_note_structure():
+    content = "# Top\n\nTop content.\n\n## Sub\n\nSub content."
+    chunks = chunk_note(content, path="memory/struct.md", revision="jkl012", min_chunk_length=1)
+
+    assert len(chunks) >= 2
+    chunk_ids = [c["chunk_id"] for c in chunks]
+    assert any("top" in cid for cid in chunk_ids)
+    assert all(c["path"] == "memory/struct.md" for c in chunks)
