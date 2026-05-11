@@ -47,14 +47,44 @@ class NoopVectorAdapter:
 class SqliteVecVectorAdapter:
     sqlite_vec: Any
     mode: str = "sqlite_vec"
+    db_path: str = ""
 
     def upsert_vectors(self, items: list[dict[str, Any]]) -> None:
-        # The storage schema is owned by the index layer; this boundary only
-        # confirms the optional backend can be selected safely.
-        return None
+        if not self.db_path or not items:
+            return None
+        from memory_mcp.index_repo import upsert_note_chunks
+
+        by_path: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            path = item.get("path", "")
+            if path not in by_path:
+                by_path[path] = []
+            by_path[path].append(item)
+
+        for path, chunks in by_path.items():
+            upsert_note_chunks(self.db_path, path, chunks)
 
     def query_vectors(self, query: Any, limit: int = 5) -> list[VectorQueryResult]:
-        return []
+        if not self.db_path or not query:
+            return []
+        from memory_mcp.index_repo import query_similar
+
+        if isinstance(query, list):
+            embedding = query
+        elif hasattr(query, "embedding"):
+            embedding = query.embedding
+        else:
+            return []
+        results = query_similar(self.db_path, embedding, limit=limit)
+
+        return [
+            VectorQueryResult(
+                path=r.path,
+                score=r.score,
+                metadata={"chunk_id": r.chunk_id, "chunk_text": r.chunk_text, "revision": r.revision},
+            )
+            for r in results
+        ]
 
 
 @dataclass
@@ -122,7 +152,8 @@ def create_vector_adapter(mode: str | None = None, config: ServerConfig | None =
             _emit_degraded_to_fts(trace_id, requested_mode, "sqlite_vec_unavailable")
             adapter = NoopVectorAdapter(requested_mode=requested_mode)
         else:
-            adapter = SqliteVecVectorAdapter(sqlite_vec=sqlite_vec)
+            db_path = config.index.db_path if config and hasattr(config, "index") else ""
+            adapter = SqliteVecVectorAdapter(sqlite_vec=sqlite_vec, db_path=db_path)
         _emit_mode_selected(trace_id, requested_mode, adapter.mode)
         return adapter
 

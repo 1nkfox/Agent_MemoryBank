@@ -62,7 +62,11 @@ def test_sqlite_vec_mode_enabled_when_available(monkeypatch, sample_config_dict,
             return fake_sqlite_vec
         raise ImportError(module_name)
 
+    def fake_query_similar(db_path, embedding, limit=5):
+        return []
+
     monkeypatch.setattr("memory_mcp.vector_adapter.importlib.import_module", fake_import)
+    monkeypatch.setattr("memory_mcp.index_repo.query_similar", fake_query_similar)
     config = _make_config(sample_config_dict, "sqlite_vec")
 
     adapter = create_vector_adapter(config=config)
@@ -97,3 +101,42 @@ def test_vector_failure_degrading_to_fts(monkeypatch, mode, caplog, trace_assert
 def test_unsupported_mode_rejected():
     with pytest.raises(ValueError, match="Unsupported vector adapter mode"):
         create_vector_adapter("unsupported")
+
+
+def test_sqlite_vec_upsert_delegates_to_index_repo(monkeypatch, tmp_path):
+    upsert_calls = []
+
+    def fake_upsert(db_path, path, chunks):
+        upsert_calls.append((db_path, path, chunks))
+
+    monkeypatch.setattr("memory_mcp.index_repo.upsert_note_chunks", fake_upsert)
+
+    adapter = SqliteVecVectorAdapter(sqlite_vec=SimpleNamespace(__name__="sqlite_vec"), db_path=str(tmp_path / "test.db"))
+    items = [{"path": "memory/a.md", "chunk_id": "h1", "text": "test", "revision": "r1", "embedding": [0.1] * 1536}]
+    upsert_vectors(adapter, items)
+
+    assert len(upsert_calls) == 1
+    assert upsert_calls[0][1] == "memory/a.md"
+    assert len(upsert_calls[0][2]) == 1
+
+
+def test_sqlite_vec_query_delegates_to_index_repo(monkeypatch, tmp_path):
+    query_calls = []
+
+    def fake_query(db_path, embedding, limit):
+        query_calls.append((db_path, embedding, limit))
+        return []
+    monkeypatch.setattr("memory_mcp.index_repo.query_similar", fake_query)
+
+    adapter = SqliteVecVectorAdapter(sqlite_vec=SimpleNamespace(__name__="sqlite_vec"), db_path=str(tmp_path / "test.db"))
+    query_vectors(adapter, [0.1] * 1536, limit=5)
+
+    assert len(query_calls) == 1
+    assert query_calls[0][2] == 5
+
+
+def test_sqlite_vec_noop_without_db_path(monkeypatch):
+    adapter = SqliteVecVectorAdapter(sqlite_vec=SimpleNamespace(__name__="sqlite_vec"), db_path="")
+    upsert_vectors(adapter, [{"path": "memory/a.md"}])
+    results = query_vectors(adapter, [0.1] * 1536, limit=5)
+    assert results == []
