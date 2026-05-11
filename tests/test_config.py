@@ -14,6 +14,7 @@ from memory_mcp.config import (
     PolicySettings,
     IndexSettings,
     VectorSettings,
+    EmbeddingSettings,
     AuditSettings,
     BackupSettings,
     load_config,
@@ -229,3 +230,62 @@ def test_env_api_keys_are_redacted_in_log(sample_config_dict, caplog, monkeypatc
     assert "api_keys" not in auth_data or all(
         v == "<redacted>" for v in auth_data["api_keys"].values()
     )
+
+
+def test_valid_embedding_settings_loaded(sample_config_dict, caplog, trace_assert):
+    caplog.set_level(logging.DEBUG)
+    config = load_config(sample_config_dict)
+
+    assert config.embedding.api_base == "http://localhost:11434/v1"
+    assert config.embedding.api_key_env == "TEST_EMBED_KEY"
+    assert config.embedding.model == "text-embedding-3-small"
+    assert config.embedding.dimensions == 1536
+    assert config.embedding.batch_size == 100
+
+
+def test_missing_embedding_api_base_raises(sample_config_dict):
+    cfg = dict(sample_config_dict)
+    del cfg["embedding"]["api_base"]
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(cfg)
+    assert exc_info.value.error_code == "CONFIG_MISSING_EMBEDDING_API_BASE"
+
+
+def test_missing_embedding_api_key_env_raises(sample_config_dict):
+    cfg = dict(sample_config_dict)
+    del cfg["embedding"]["api_key_env"]
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(cfg)
+    assert exc_info.value.error_code == "CONFIG_MISSING_EMBEDDING_API_KEY_ENV"
+
+
+def test_invalid_embedding_model_raises(sample_config_dict):
+    cfg = dict(sample_config_dict)
+    cfg["embedding"]["model"] = "invalid-model"
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(cfg)
+    assert exc_info.value.error_code == "CONFIG_INVALID_EMBEDDING_MODEL"
+
+
+def test_invalid_embedding_dimensions_raises(sample_config_dict):
+    cfg = dict(sample_config_dict)
+    cfg["embedding"]["dimensions"] = 999
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(cfg)
+    assert exc_info.value.error_code == "CONFIG_INVALID_EMBEDDING_DIMENSIONS"
+
+
+def test_embedding_api_key_env_is_redacted_in_log(sample_config_dict, caplog, trace_assert):
+    caplog.set_level(logging.DEBUG)
+
+    load_config(sample_config_dict)
+    entries = _parse_logs(caplog)
+    loaded_entry = next(e for e in entries if e.get("event") == "config.loaded")
+
+    emb_data = loaded_entry["data"]["embedding"]
+    assert emb_data["api_key_env"] == "<redacted>"
+    assert emb_data["api_base"] == "http://localhost:11434/v1"

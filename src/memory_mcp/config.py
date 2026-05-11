@@ -19,7 +19,7 @@ UNSAFE_VAULT_ROOTS = {
 VALID_VECTOR_BACKENDS = {"disabled", "sqlite_vec", "qdrant_optional"}
 
 REQUIRED_SECTIONS = [
-    "vault", "server", "auth", "policy", "index", "vector", "audit", "backup",
+    "vault", "server", "auth", "policy", "index", "vector", "embedding", "audit", "backup",
 ]
 
 
@@ -75,6 +75,15 @@ class AuditSettings:
 
 
 @dataclass
+class EmbeddingSettings:
+    api_base: str
+    api_key_env: str
+    model: str
+    dimensions: int
+    batch_size: int
+
+
+@dataclass
 class BackupSettings:
     enabled: bool
     git_path: str
@@ -88,8 +97,10 @@ class ServerConfig:
     policy: PolicySettings
     index: IndexSettings
     vector: VectorSettings
+    embedding: EmbeddingSettings
     audit: AuditSettings
     backup: BackupSettings
+    process_event_db_path: str = ""
 
 
 # --- Structured logging helpers ---
@@ -120,6 +131,11 @@ def _sanitize_config(raw: dict[str, Any]) -> dict[str, Any]:
             if auth_copy.get("api_keys_from_env"):
                 auth_copy["api_keys_from_env"] = "<redacted>"
             result[key] = auth_copy
+        elif key == "embedding" and isinstance(value, dict):
+            emb_copy = dict(value)
+            if emb_copy.get("api_key_env"):
+                emb_copy["api_key_env"] = "<redacted>"
+            result[key] = emb_copy
         else:
             result[key] = value
     return result
@@ -188,6 +204,50 @@ def validate_config(config_dict: dict[str, Any]) -> None:
             "CONFIG_INVALID_VECTOR_BACKEND",
         )
 
+    embedding_section = config_dict.get("embedding", {})
+    if not embedding_section.get("api_base"):
+        _log_structured(
+            logging.ERROR, "config.invalid",
+            error_code="CONFIG_MISSING_EMBEDDING_API_BASE",
+            function="validate_config", block="M-011",
+            data={"reason": "embedding.api_base is required"},
+        )
+        raise ConfigError("embedding.api_base is required", "CONFIG_MISSING_EMBEDDING_API_BASE")
+
+    if not embedding_section.get("api_key_env"):
+        _log_structured(
+            logging.ERROR, "config.invalid",
+            error_code="CONFIG_MISSING_EMBEDDING_API_KEY_ENV",
+            function="validate_config", block="M-011",
+            data={"reason": "embedding.api_key_env is required"},
+        )
+        raise ConfigError("embedding.api_key_env is required", "CONFIG_MISSING_EMBEDDING_API_KEY_ENV")
+
+    if embedding_section.get("model", "") not in ("text-embedding-3-small", "text-embedding-3-large"):
+        _log_structured(
+            logging.ERROR, "config.invalid",
+            error_code="CONFIG_INVALID_EMBEDDING_MODEL",
+            function="validate_config", block="M-011",
+            data={"model": embedding_section.get("model")},
+        )
+        raise ConfigError(
+            f"Unsupported embedding model: {embedding_section.get('model')}",
+            "CONFIG_INVALID_EMBEDDING_MODEL",
+        )
+
+    dims = embedding_section.get("dimensions")
+    if dims not in (1536, 3072):
+        _log_structured(
+            logging.ERROR, "config.invalid",
+            error_code="CONFIG_INVALID_EMBEDDING_DIMENSIONS",
+            function="validate_config", block="M-011",
+            data={"dimensions": dims},
+        )
+        raise ConfigError(
+            f"Invalid embedding dimensions: {dims}. Must be 1536 or 3072.",
+            "CONFIG_INVALID_EMBEDDING_DIMENSIONS",
+        )
+
 
 def _resolve_api_keys(auth_section: dict[str, Any]) -> dict[str, str]:
     env_var_name = auth_section.get("api_keys_from_env", "")
@@ -243,6 +303,21 @@ def load_config(config_dict: dict[str, Any]) -> ServerConfig:
         fts_language=config_dict["index"]["fts_language"],
     )
     vector = VectorSettings(backend=config_dict["vector"]["backend"])
+
+    emb = config_dict.get("embedding", {})
+    embedding = EmbeddingSettings(
+        api_base=emb.get("api_base", ""),
+        api_key_env=emb.get("api_key_env", ""),
+        model=emb.get("model", "text-embedding-3-small"),
+        dimensions=int(emb.get("dimensions", 1536)),
+        batch_size=int(emb.get("batch_size", 100)),
+    )
+
+    process_event_db_path = config_dict.get("index", {}).get(
+        "process_event_db_path",
+        "",
+    )
+
     audit = AuditSettings(
         enabled=config_dict["audit"]["enabled"],
         audit_db_path=config_dict["audit"]["audit_db_path"],
@@ -255,7 +330,9 @@ def load_config(config_dict: dict[str, Any]) -> ServerConfig:
 
     config = ServerConfig(
         vault=vault, server=server, auth=auth, policy=policy,
-        index=index, vector=vector, audit=audit, backup=backup,
+        index=index, vector=vector, embedding=embedding,
+        audit=audit, backup=backup,
+        process_event_db_path=process_event_db_path,
     )
 
     _log_structured(

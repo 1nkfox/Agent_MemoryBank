@@ -91,6 +91,13 @@ def sample_config_dict() -> dict:
             "fts_language": "english",
         },
         "vector": {"backend": "disabled"},
+        "embedding": {
+            "api_base": "http://localhost:11434/v1",
+            "api_key_env": "TEST_EMBED_KEY",
+            "model": "text-embedding-3-small",
+            "dimensions": 1536,
+            "batch_size": 100,
+        },
         "audit": {
             "enabled": True,
             "audit_db_path": "/tmp/test-vault/.obsidian/audit.db",
