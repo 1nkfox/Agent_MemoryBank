@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
 
 from aiohttp import web
 
@@ -17,7 +16,6 @@ from memory_mcp.admin_auth import (
 )
 from memory_mcp.admin_dashboard_service import (
     DashboardSummary,
-    ErrorEntry,
     Event,
     get_dashboard_summary,
     get_error_timeline,
