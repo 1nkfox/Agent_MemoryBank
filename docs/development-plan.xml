@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<GRACEDevelopmentPlan id="DEV-ROOT-001" project="AgentMemBank" status="approved" version="1.2" updated_at="2026-05-10T17:00:00+03:00">
+<GRACEDevelopmentPlan id="DEV-ROOT-001" project="AgentMemBank" status="approved" version="1.3" updated_at="2026-05-11T23:51:37+03:00">
   <Metadata id="DEV-META-001">
     <title>Development Plan for AgentMemBank MCP Server</title>
     <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
@@ -18,9 +18,9 @@
 
   <ModuleContracts id="MODULES-001">
     <Module id="M-001" name="MCPServerEntrypoint" type="ENTRY_POINT" verification_ref="V-M-001">
-      <purpose>Exposes Streamable HTTP MCP tools and coordinates auth, policy, mutation, retrieval, index refresh and health endpoints.</purpose>
-      <scope>Tool registration, request routing, auth/policy orchestration, service invocation, affected_paths handoff, health/admin endpoints. Must forward actual dry_run parameter to mutation services; must call M-006.prepare_change via M-008 for ALL mutation types (create/append/edit/write). Index refresh after mutation is synchronous in handler (blocking); background worker pattern is future optimization.</scope>
-      <depends>M-002 M-003 M-004 M-008 M-010 M-014 M-017 M-018 M-019 M-021 M-022 M-023 M-012</depends>
+      <purpose>Exposes Streamable HTTP MCP tools and coordinates auth, policy, mutation, retrieval, index refresh, process event recording and health endpoints.</purpose>
+      <scope>Tool registration, request routing, auth/policy orchestration, service invocation, affected_paths handoff, health/admin endpoints. Records process events (boot, tool registration, request lifecycle) via M-025. Must forward actual dry_run parameter to mutation services; must call M-006.prepare_change via M-008 for ALL mutation types (create/append/edit/write). Index refresh after mutation is synchronous in handler (blocking); background worker pattern is future optimization.</scope>
+      <depends>M-002 M-003 M-004 M-008 M-010 M-014 M-017 M-018 M-019 M-021 M-022 M-023 M-025 M-012</depends>
       <target_path>src/memory_mcp/server.py</target_path>
       <test_path>tests/test_server.py</test_path>
       <public_interfaces>
@@ -40,14 +40,14 @@
         <fn-get_instructions id="M-001-FN-014" />
         <fn-membank_init id="M-001-FN-015" />
       </public_interfaces>
-      <observability>Must create trace_id and emit tool routing, policy outcome and service result anchors.</observability>
+      <observability>Must create trace_id and emit tool routing, policy outcome and service result anchors. Records process events at server startup, tool registration and each request lifecycle (received/completed/failed).</observability>
       <rationale>Central orchestration keeps MCP transport thin while preventing service-to-service cycles such as mutation directly refreshing index.</rationale>
     </Module>
 
     <Module id="M-020" name="MCPTransport" type="ENTRY_POINT" verification_ref="V-M-020">
-      <purpose>Provides aiohttp-based Streamable HTTP MCP transport with JSON-RPC 2.0 handling, Bearer token auth, MCP method routing and health endpoint.</purpose>
-      <scope>JSON-RPC 2.0 over POST /message; Bearer token extraction from Authorization header; MCP version negotiation (2024-11-05); initialize, notifications/initialized, tools/list, tools/call, ping routing; GET /health endpoint; graceful shutdown on SIGTERM/SIGINT; invalid JSON and unknown method error handling.</scope>
-      <depends>M-001 M-011 M-012</depends>
+      <purpose>Provides aiohttp-based Streamable HTTP MCP transport with JSON-RPC 2.0 handling, Bearer token auth, MCP method routing, health endpoint and startup process event recording.</purpose>
+      <scope>JSON-RPC 2.0 over POST /message; Bearer token extraction from Authorization header; MCP version negotiation (2024-11-05); initialize, notifications/initialized, tools/list, tools/call, ping routing; GET /health endpoint; graceful shutdown on SIGTERM/SIGINT; invalid JSON and unknown method error handling. Records transport.started process event at startup.</scope>
+      <depends>M-001 M-011 M-025 M-012</depends>
       <target_path>src/memory_mcp/transport.py</target_path>
       <test_path>tests/test_transport.py</test_path>
       <public_interfaces>
@@ -57,7 +57,7 @@
         <fn-_health_handler id="M-020-FN-004" />
         <fn-_handle_mcp_request id="M-020-FN-005" />
       </public_interfaces>
-      <observability>Emit transport.starting; every JSON-RPC error response must include error code per STANDARD_ERROR_CODES.</observability>
+      <observability>Emit transport.starting; every JSON-RPC error response must include error code per STANDARD_ERROR_CODES. Records process_event at server start.</observability>
       <rationale>A separate transport module keeps HTTP concerns isolated from MCP tool logic, enabling transport-level testing independently of Vault operations.</rationale>
     </Module>
 
@@ -164,38 +164,64 @@
     </Module>
 
     <Module id="M-027" name="AdminDashboardService" type="CORE_LOGIC" verification_ref="V-M-027">
-      <purpose>Aggregates read-only admin dashboard data: health, events, errors, file changes, MCP requests, layout drift and report exports.</purpose>
-      <scope>Dashboard summary, recent events, error timeline, process details, report request handoff and degraded-mode results.</scope>
+      <purpose>Aggregates read-only admin dashboard data: health, events (process + audit UNION), errors, file changes, MCP requests, layout drift and report exports.</purpose>
+      <scope>Dashboard summary, recent events (UNION process_events + audit_log), error timeline, process details, report request handoff and degraded-mode results.</scope>
       <depends>M-011 M-012 M-014 M-017 M-022 M-025 M-026</depends>
       <target_path>src/memory_mcp/admin_dashboard_service.py</target_path>
       <test_path>tests/test_admin_dashboard_service.py</test_path>
       <public_interfaces>
         <fn-get_dashboard_summary id="M-027-FN-001" />
-        <fn-get_recent_events id="M-027-FN-002" />
+        <fn-get_recent_events id="M-027-FN-002"><note>Queries process_events UNION audit_log by timestamp DESC. Audit events are read from audit_log table directly (read-only query), not through M-009 API. This preserves forbidden-edge separation.</note></fn-get_recent_events>
         <fn-get_error_timeline id="M-027-FN-003" />
         <fn-get_process_detail id="M-027-FN-004" />
         <fn-request_log_export id="M-027-FN-005" />
         <type-DashboardSummary id="M-027-TYPE-001" />
       </public_interfaces>
       <observability>Emit admin_dashboard.summary.generated, admin_dashboard.events.filtered and admin_dashboard.degraded.</observability>
-      <rationale>Dashboard aggregation should be UI-agnostic and read-only so the web layer cannot become a direct mutation surface.</rationale>
+      <rationale>Dashboard aggregation should be UI-agnostic and read-only. UNION at query level preserves audit/process-log separation while giving unified visibility.</rationale>
     </Module>
 
     <Module id="M-028" name="AdminWebInterface" type="ENTRY_POINT" verification_ref="V-M-028">
-      <purpose>Provides private read-only admin web pages for login, process timeline, filters and .log export.</purpose>
-      <scope>Admin routes, login page, dashboard page, event filter request handling, report download response and session enforcement.</scope>
+      <purpose>Provides private read-only admin web pages for login, process timeline with audit events, filters and .log export.</purpose>
+      <scope>Admin routes, login page, dashboard page (with UNION process_events + audit_log), event filter request handling, report download response and session enforcement. Binds admin_db to ServerConfig.process_event_db_path (not empty string).</scope>
       <depends>M-024 M-027 M-012</depends>
       <target_path>src/memory_mcp/admin_web.py</target_path>
       <test_path>tests/test_admin_web.py</test_path>
       <public_interfaces>
-        <fn-create_admin_routes id="M-028-FN-001" />
+        <fn-create_admin_routes id="M-028-FN-001"><note>Sets app["admin_db"] = config.process_event_db_path (was: ""), app["admin_audit_db"] = config.audit.audit_db_path.</note></fn-create_admin_routes>
         <fn-render_login_page id="M-028-FN-002" />
         <fn-render_dashboard_page id="M-028-FN-003" />
         <fn-handle_log_export id="M-028-FN-004" />
       </public_interfaces>
       <observability>Emit admin_web.request.received, admin_web.access.denied, admin_web.dashboard.rendered and admin_web.report.downloaded.</observability>
-      <rationale>A thin entry point keeps admin UI private, session-gated and separated from Vault filesystem and audit internals.</rationale>
+      <rationale>A thin entry point keeps admin UI private and session-gated. Dashboard now shows unified process + audit events.</rationale>
     </Module>
+
+    <Module id="M-029" name="EmbeddingService" type="UTILITY" verification_ref="V-M-029">
+      <purpose>Generates text embedding vectors via OpenAI-compatible API (text-embedding-3-small, 1536 dimensions).</purpose>
+      <scope>Text-to-vector embedding, batch embedding for multiple chunks, API key resolution from env (never stored in config), request batching and retry logic.</scope>
+      <depends>M-011 M-012</depends>
+      <target_path>src/memory_mcp/embedding_service.py</target_path>
+      <test_path>tests/test_embedding_service.py</test_path>
+      <public_interfaces>
+        <fn-embed_text id="M-029-FN-001">Single text → vector[1536].</fn-embed_text>
+        <fn-embed_batch id="M-029-FN-002">Batch of texts → list of vectors; respects batch_size from config.</fn-embed_batch>
+        <fn-embed_chunks id="M-029-FN-003">List of chunks from M-015 → list of ChunkEmbedding with vectors attached.</fn-embed_chunks>
+        <type-ChunkEmbedding id="M-029-TYPE-001">
+          <field name="path">Note file path.</field>
+          <field name="chunk_id">Chunk identifier (heading-based).</field>
+          <field name="chunk_text">Original chunk text.</field>
+          <field name="embedding">float[1536] vector.</field>
+          <field name="revision">Note revision at embedding time.</field>
+        </type-ChunkEmbedding>
+      </public_interfaces>
+      <observability>Emit embedding.generated, embedding.batch.completed; API key and raw text must not be logged.</observability>
+      <rationale>Separate embedding module enables model swap (e.g. text-embedding-3-large, multilingual variant) without touching retrieval or index layers.</rationale>
+    </Module>
+
+    <!-- ═══════════════════════════════════════════════════════════════ -->
+    <!-- LEGACY MODULES (PH-001..PH-006)                                 -->
+    <!-- ═══════════════════════════════════════════════════════════════ -->
 
     <Module id="M-002" name="AuthIdentityService" type="CORE_LOGIC" verification_ref="V-M-002">
       <purpose>Resolves agent identity, API key, role and policy profile.</purpose>
@@ -327,9 +353,9 @@
     </Module>
 
     <Module id="M-010" name="RetrievalService" type="CORE_LOGIC" verification_ref="V-M-010">
-      <purpose>Provides keyword, FTS, optional semantic, similar-notes, wiki-source retrieval and explainable ranking.</purpose>
-      <scope>Search query orchestration, FTS retrieval, optional vector retrieval, policy filtering, ranking explanation.</scope>
-      <depends>M-003 M-013 M-015 M-016 M-012</depends>
+      <purpose>Provides hybrid search (FTS + vector), similar-notes, wiki-source retrieval and explainable ranking.</purpose>
+      <scope>Hybrid search orchestration: embed query via M-029, vector search via M-016, FTS retrieval via M-013, result union with score merging, policy filtering, ranking explanation including vector_score and fts_rank sources.</scope>
+      <depends>M-003 M-013 M-015 M-016 M-029 M-012</depends>
       <target_path>src/memory_mcp/retrieval_service.py</target_path>
       <test_path>tests/test_retrieval_service.py</test_path>
       <public_interfaces>
@@ -338,13 +364,13 @@
         <fn-find_wiki_sources id="M-010-FN-003" />
         <fn-explain_ranking id="M-010-FN-004" />
       </public_interfaces>
-      <observability>Emit retrieval.query.completed and retrieval.denied_path.filtered.</observability>
-      <rationale>Retrieval must filter at response time because derivative indexes may temporarily contain stale entries.</rationale>
+      <observability>Emit retrieval.query.completed (source: fts|vector|hybrid) and retrieval.denied_path.filtered.</observability>
+      <rationale>Hybrid retrieval (FTS + vector) provides better recall than FTS alone while policy filtering ensures denylisted content never reaches response.</rationale>
     </Module>
 
     <Module id="M-011" name="ConfigService" type="UTILITY" verification_ref="V-M-011">
-      <purpose>Loads server, Vault, auth, policy, index, audit and backup configuration.</purpose>
-      <scope>Parse configuration, provide typed settings, validate required settings, expose policy and backend choices.</scope>
+      <purpose>Loads server, Vault, auth, policy, index, embedding, vector, audit, backup and process event configuration.</purpose>
+      <scope>Parse configuration, provide typed settings, validate required settings, expose policy, embedding (OpenAI-compatible), vector backend and process event DB choices.</scope>
       <depends>none</depends>
       <target_path>src/memory_mcp/config.py</target_path>
       <test_path>tests/test_config.py</test_path>
@@ -352,9 +378,17 @@
         <fn-load_config id="M-011-FN-001" />
         <fn-validate_config id="M-011-FN-002" />
         <type-ServerConfig id="M-011-TYPE-001" />
+        <type-EmbeddingSettings id="M-011-TYPE-002">
+          <field name="api_base" required="true">OpenAI-compatible API base URL.</field>
+          <field name="api_key_env" required="true">Environment variable name holding the API key.</field>
+          <field name="model" required="true">Model name, e.g. text-embedding-3-small.</field>
+          <field name="dimensions" required="true">Vector dimension, 1536 for text-embedding-3-small.</field>
+          <field name="batch_size" required="true">Max chunks per API call.</field>
+        </type-EmbeddingSettings>
+        <field-ServerConfig.process_event_db_path>Path to SQLite DB for process_events storage; defaults to index_db_path/../process_events.db if not explicitly set.</field-ServerConfig.process_event_db_path>
       </public_interfaces>
-      <observability>May expose sanitized config summary; must not log secrets.</observability>
-      <rationale>Configuration centralization prevents policy and backend drift between modules.</rationale>
+      <observability>Must expose sanitized config summary (including embedding model name and dimension, not the API key); must not log secrets.</observability>
+      <rationale>Centralized config for embedding and process event DB paths prevents drift between dashboard, logging and retrieval modules.</rationale>
     </Module>
 
     <Module id="M-012" name="ObservabilityService" type="UTILITY" verification_ref="V-M-012">
@@ -373,8 +407,8 @@
     </Module>
 
     <Module id="M-013" name="IndexRepository" type="DATA_LAYER" verification_ref="V-M-013">
-      <purpose>Maintains SQLite metadata, FTS5, audit-index access and future vector tables derived from Vault files.</purpose>
-      <scope>SQLite schema, FTS operations, index state, WAL/busy_timeout initialization, derivative metadata persistence.</scope>
+      <purpose>Maintains SQLite metadata, FTS5, vector tables (sqlite-vec), audit-index access and future vector tables derived from Vault files.</purpose>
+      <scope>SQLite schema with WAL/busy_timeout, FTS5 operations, note_chunks_vec virtual table via sqlite-vec, vector upsert/delete/query, index_state tracking.</scope>
       <depends>M-005 M-011 M-012</depends>
       <target_path>src/memory_mcp/index_repo.py</target_path>
       <test_path>tests/test_index_repo.py</test_path>
@@ -383,15 +417,18 @@
         <fn-upsert_note_index id="M-013-FN-002" />
         <fn-delete_note_index id="M-013-FN-003" />
         <fn-search_fts id="M-013-FN-004" />
+        <fn-upsert_note_chunks id="M-013-FN-005">Persists chunk embeddings for a note into note_chunks_vec; deletes prior chunks for same path first.</fn-upsert_note_chunks>
+        <fn-delete_note_chunks id="M-013-FN-006">Removes all vector chunks for a given note path.</fn-delete_note_chunks>
+        <fn-query_similar id="M-013-FN-007">Returns top-K vector matches for a given embedding vector via sqlite-vec.</fn-query_similar>
       </public_interfaces>
-      <observability>Emit index.schema.ready and index.fts.query.completed.</observability>
-      <rationale>Keeping index persistence separate reinforces that the index is rebuildable and not the source of truth.</rationale>
+      <observability>Emit index.schema.ready, index.vector.upsert.completed, index.vector.query.completed.</observability>
+      <rationale>Keeping index persistence separate reinforces that the index is rebuildable and not the source of truth. sqlite-vec keeps vector storage within the same SQLite boundary.</rationale>
     </Module>
 
     <Module id="M-014" name="IndexRefreshService" type="CORE_LOGIC" verification_ref="V-M-014">
-      <purpose>Rebuilds or incrementally updates the index from Vault content and affected_paths.</purpose>
-      <scope>refresh_paths, startup_reconcile, refresh_wiki_folder, single writer queue coordination, optional vector update.</scope>
-      <depends>M-003 M-005 M-013 M-015 M-016 M-012</depends>
+      <purpose>Rebuilds or incrementally updates the index from Vault content and affected_paths. Generates embeddings for changed notes via M-029 and upserts via M-016.</purpose>
+      <scope>refresh_paths (FTS + vector), startup_reconcile (including vector reconcile), refresh_wiki_folder, reindex_all_vectors (full Vault vector reindex), single writer queue coordination.</scope>
+      <depends>M-003 M-005 M-013 M-015 M-016 M-029 M-012</depends>
       <target_path>src/memory_mcp/index_refresh.py</target_path>
       <test_path>tests/test_index_refresh.py</test_path>
       <public_interfaces>
@@ -399,14 +436,15 @@
         <fn-refresh_paths id="M-014-FN-002" />
         <fn-refresh_wiki_folder id="M-014-FN-003" />
         <fn-startup_reconcile id="M-014-FN-004" />
+        <fn-reindex_all_vectors id="M-014-FN-005">Iterates all Vault .md files, chunks via M-015, generates embeddings via M-029, upserts via M-016. Used at startup and after membank_init/apply.</fn-reindex_all_vectors>
       </public_interfaces>
-      <observability>Emit index.refresh.started and index.refresh.completed.</observability>
-      <rationale>Refresh is a supervised derivative update triggered outside mutation execution to prevent cycles and preserve write safety.</rationale>
+      <observability>Emit index.refresh.started, index.refresh.completed, index.vector.reindex.started, index.vector.reindex.completed.</observability>
+      <rationale>Refresh is a supervised derivative update triggered outside mutation execution to prevent cycles. Vector generation is part of refresh because embeddings are derivative and rebuildable.</rationale>
     </Module>
 
     <Module id="M-015" name="MarkdownSemanticParser" type="UTILITY" verification_ref="V-M-015">
-      <purpose>Extracts frontmatter, tags, links, headings, sections and validates post-apply Markdown shape.</purpose>
-      <scope>Markdown parsing, section extraction, heading paths, link extraction, post-apply validation.</scope>
+      <purpose>Extracts frontmatter, tags, links, headings, sections, validates post-apply Markdown shape and chunks notes for embedding.</purpose>
+      <scope>Markdown parsing, section extraction, heading paths, link extraction, post-apply validation, note chunking by heading sections for vector embedding.</scope>
       <depends>M-012</depends>
       <target_path>src/memory_mcp/markdown_parser.py</target_path>
       <test_path>tests/test_markdown_parser.py</test_path>
@@ -414,15 +452,16 @@
         <fn-parse_markdown id="M-015-FN-001" />
         <fn-extract_sections id="M-015-FN-002" />
         <fn-validate_markdown_shape id="M-015-FN-003" />
+        <fn-chunk_note id="M-015-FN-004">Splits Markdown content into heading-delimited chunks; returns list of {chunk_id, heading, text, path, position} for embedding.</fn-chunk_note>
       </public_interfaces>
-      <observability>Emit markdown.parse.completed and markdown.validation.failed when applicable.</observability>
-      <rationale>A reusable semantic parser keeps edit validation, indexing and wiki source extraction consistent.</rationale>
+      <observability>Emit markdown.parse.completed, markdown.validation.failed and markdown.chunked when applicable.</observability>
+      <rationale>A reusable semantic parser keeps edit validation, indexing, wiki source extraction AND embedding chunking consistent.</rationale>
     </Module>
 
     <Module id="M-016" name="VectorSearchAdapter" type="INTEGRATION" verification_ref="V-M-016">
-      <purpose>Provides optional vector search via disabled/sqlite-vec/qdrant-optional implementations.</purpose>
-      <scope>Backend selection, vector upsert/query abstraction, graceful degradation to FTS.</scope>
-      <depends>M-011 M-012</depends>
+      <purpose>Provides vector search via disabled/sqlite_vec/qdrant_optional implementations. SqliteVecVectorAdapter is the active backend with full upsert and query against note_chunks_vec.</purpose>
+      <scope>Backend selection, vector upsert via M-013.note_chunks_vec, vector query via M-013.query_similar, graceful degradation to FTS. QdrantOptionalVectorAdapter remains a stub for future migration (when vault exceeds ~100K notes).</scope>
+      <depends>M-011 M-012 M-013 M-029</depends>
       <target_path>src/memory_mcp/vector_adapter.py</target_path>
       <test_path>tests/test_vector_adapter.py</test_path>
       <public_interfaces>
@@ -430,8 +469,8 @@
         <fn-upsert_vectors id="M-016-FN-002" />
         <fn-query_vectors id="M-016-FN-003" />
       </public_interfaces>
-      <observability>Emit vector.mode.selected and vector.degraded_to_fts.</observability>
-      <rationale>The boundary describes semantic retrieval capability instead of binding architecture to Qdrant prematurely.</rationale>
+      <observability>Emit vector.mode.selected, vector.upsert.completed, vector.query.completed and vector.degraded_to_fts.</observability>
+      <rationale>sqlite-vec preserves local-first deployment while offering vector search within the same SQLite DB. The Qdrant path is kept as future-safe stub — switching requires only config change and adapter reimplementation.</rationale>
     </Module>
 
     <Module id="M-017" name="BackupService" type="INTEGRATION" verification_ref="V-M-017">
@@ -562,6 +601,16 @@
       <edge id="DAG-E-081" from="M-001" to="M-020" coupling="entrypoint_delegates_http_to" />
       <edge id="DAG-E-082" from="M-020" to="M-001" coupling="invokes_tools_via" />
       <edge id="DAG-E-083" from="M-011" to="M-020" />
+      <!-- PH-010: SemanticRetrievalActivation — embedding and vector search -->
+      <edge id="DAG-E-084" from="M-011" to="M-029" />
+      <edge id="DAG-E-085" from="M-029" to="M-016" coupling="embedding_for_query_and_upsert" />
+      <edge id="DAG-E-086" from="M-029" to="M-014" coupling="embedding_during_refresh" />
+      <edge id="DAG-E-087" from="M-015" to="M-029" coupling="chunked_text_fed_to_embedder" />
+      <edge id="DAG-E-088" from="M-013" to="M-016" coupling="vector_storage_backend" />
+      <edge id="DAG-E-089" from="M-029" to="M-010" coupling="query_embedding_for_hybrid_search" />
+      <!-- PH-011: ProcessEventAndAuditIntegration -->
+      <edge id="DAG-E-090" from="M-025" to="M-001" />
+      <edge id="DAG-E-091" from="M-025" to="M-020" />
       <forbidden_edge id="DAG-FORBID-001" from="M-008" to="M-014" rationale="Would create mutation/index coupling and risk circular dependency." />
     <forbidden_edge id="DAG-FORBID-002" from="M-022" to="M-001" rationale="Vault layout detection must not call MCP entrypoint." />
     <forbidden_edge id="DAG-FORBID-003" from="M-021" to="M-001" rationale="Instruction composition must be service-only and not route tools." />
@@ -698,6 +747,26 @@
       <verification_refs>V-M-024 V-M-025 V-M-026 V-M-027 V-M-028 DF-010 DF-011 DF-012</verification_refs>
       <rationale>Operational visibility must be added after core safety boundaries and must remain read-only to avoid expanding mutation risk.</rationale>
     </Phase>
+    <Phase id="PH-010" name="SemanticRetrievalActivation" status="complete" gate="PG-010" gate_passed="true">
+      <step id="STEP-033" module="M-029" status="complete" completed_at="2026-05-11">Create EmbeddingService with OpenAI-compatible API (text-embedding-3-small, 1536d).</step>
+      <step id="STEP-034" module="M-011" status="complete" completed_at="2026-05-11">Add EmbeddingSettings dataclass and process_event_db_path to ServerConfig.</step>
+      <step id="STEP-035" module="M-015" status="complete" completed_at="2026-05-11">Add chunk_note() to MarkdownSemanticParser — split Markdown into heading-delimited chunks.</step>
+      <step id="STEP-036" module="M-013" status="complete" completed_at="2026-05-11">Add note_chunks_vec virtual table via sqlite-vec, plus upsert_note_chunks/delete_note_chunks/query_similar functions.</step>
+      <step id="STEP-037" module="M-016" status="complete" completed_at="2026-05-11">Implement SqliteVecVectorAdapter real upsert/query against M-013 note_chunks_vec.</step>
+      <step id="STEP-038" module="M-014" status="complete" completed_at="2026-05-11">Integrate vector generation into refresh_paths; add reindex_all_vectors() for full Vault reindex at startup and membank_init/apply.</step>
+      <step id="STEP-039" module="M-010" status="complete" completed_at="2026-05-11">Enable hybrid search: embed query via M-029 → vector search via M-016 → FTS search → union results → policy filter → explainable ranking with vector_score + fts_rank.</step>
+      <verification_refs>V-M-029 V-M-011 V-M-015 V-M-013 V-M-016 V-M-014 V-M-010</verification_refs>
+      <rationale>Semantic retrieval adds vector-based recall on top of FTS. Using sqlite-vec preserves local-first deployment. OpenAI-compatible embedding allows model provider flexibility. Full vector reindex on startup and init ensures fresh embeddings.</rationale>
+    </Phase>
+    <Phase id="PH-011" name="ProcessEventAndAuditIntegration" status="complete" gate="PG-011" gate_passed="true">
+      <step id="STEP-040" module="M-001" status="complete" completed_at="2026-05-11">Insert record_process_event calls in tool handlers: server startup, tool registration, request.received, request.completed, request.failed.</step>
+      <step id="STEP-041" module="M-020" status="complete" completed_at="2026-05-11">Insert record_process_event at transport startup.</step>
+      <step id="STEP-042" module="M-028" status="complete" completed_at="2026-05-11">Fix admin_db wiring: use config.process_event_db_path (not empty string). Set app["admin_audit_db"] for audit UNION.</step>
+      <step id="STEP-043" module="M-023" status="complete" completed_at="2026-05-11">Record membank_init started/completed process events.</step>
+      <step id="STEP-044" module="M-027" status="complete" completed_at="2026-05-11">Extend get_recent_events() to UNION process_events + audit_log by timestamp DESC, preserving forbidden-edge separation.</step>
+      <verification_refs>V-M-001 V-M-020 V-M-028 V-M-023 V-M-027 V-M-025</verification_refs>
+      <rationale>Bridging the observability gap between log_trace_anchor (Python logging) and process_events (SQLite) fulfills DF-010 contract. Adding audit events to Recent Events gives unified operational visibility without violating audit/process-log separation.</rationale>
+    </Phase>
   </ImplementationPhases>
 
   <RiskRegister id="RISKS-001">
@@ -748,6 +817,22 @@
     <Risk id="R-012" stop_condition="SC-003">
       <description>Mutation policy dry_run gate bypassed because _authorize_or_raise hardcodes dry_run=True instead of forwarding the actual call parameter.</description>
       <mitigation>M-008._authorize_or_raise must accept and forward the actual dry_run parameter to M-003.authorize_operation. Static analysis or contract test must verify that authorize_operation sees the same dry_run value the caller passed.</mitigation>
+    </Risk>
+    <Risk id="R-013" stop_condition="SC-011">
+      <description>Embedding API key leaked in logs or error traces.</description>
+      <mitigation>API key read from env (api_key_env), never stored in config or logs; M-029 must redact key from all log output.</mitigation>
+    </Risk>
+    <Risk id="R-014" stop_condition="SC-012">
+      <description>Vector search returns results inconsistent with FTS, causing missing notes in hybrid mode.</description>
+      <mitigation>Hybrid search must union vector + FTS results; vector failure degrades to FTS-only. Test with known-content fixtures validates recall parity.</mitigation>
+    </Risk>
+    <Risk id="R-015" stop_condition="SC-013">
+      <description>sqlite-vec virtual table not available in deployed Python environment.</description>
+      <mitigation>M-016.create_vector_adapter detects sqlite-vec import failure and degrades to NoopVectorAdapter; FTS remains operational.</mitigation>
+    </Risk>
+    <Risk id="R-016" stop_condition="SC-010">
+      <description>Process event recording creates audit loop by recording LOG.md projection updates as new process events.</description>
+      <mitigation>Process events for audit/LOG.md category are excluded from recording; only user-initiated and operational events are persisted.</mitigation>
     </Risk>
   </RiskRegister>
 </GRACEDevelopmentPlan>

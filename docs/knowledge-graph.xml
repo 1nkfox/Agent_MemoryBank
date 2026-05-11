@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<GRACEKnowledgeGraph id="KG-ROOT-001" project="AgentMemBank" status="approved" version="1.4" updated_at="2026-05-10T17:00:00+03:00">
+<GRACEKnowledgeGraph id="KG-ROOT-001" project="AgentMemBank" status="approved" version="1.5" updated_at="2026-05-11T23:51:37+03:00">
   <Metadata id="KG-META-001">
     <title>Knowledge Graph for AgentMemBank MCP Server</title>
     <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
-    <approval>Architecture approved by user; Agent UX + Admin Observability extension approved 2026-05-10.</approval>
+    <approval>Architecture approved by user; Agent UX + Admin Observability extension approved 2026-05-10. Semantic Retrieval Activation (PH-010) + Process Event Integration (PH-011) approved 2026-05-11.</approval>
   </Metadata>
 
   <Concepts id="KG-CONCEPTS-001">
@@ -124,30 +124,42 @@
     </M-026>
 
     <M-027 NAME="AdminDashboardService" TYPE="CORE_LOGIC" verification-ref="V-M-027">
-      <Purpose>Aggregates read-only admin dashboard data for health, timelines, errors, file changes, MCP requests, drift and exports.</Purpose>
+      <Purpose>Aggregates read-only admin dashboard data for health, timelines (process + audit UNION), errors, file changes, MCP requests, drift and exports.</Purpose>
       <TargetPath>src/memory_mcp/admin_dashboard_service.py</TargetPath>
       <PublicInterface>
         <fn-get_dashboard_summary id="KG-M-027-FN-001" />
-        <fn-get_recent_events id="KG-M-027-FN-002" />
+        <fn-get_recent_events id="KG-M-027-FN-002"><note>UNIONs process_events + audit_log by timestamp DESC for unified operational visibility.</note></fn-get_recent_events>
         <fn-get_error_timeline id="KG-M-027-FN-003" />
         <fn-get_process_detail id="KG-M-027-FN-004" />
         <fn-request_log_export id="KG-M-027-FN-005" />
         <type-DashboardSummary id="KG-M-027-TYPE-001" />
       </PublicInterface>
-      <Contracts>Must be read-only, sanitized, session-gated through M-028/M-024 and degrade gracefully if event storage is unavailable.</Contracts>
+      <Contracts>Must be read-only, sanitized, session-gated through M-028/M-024 and degrade gracefully if event storage is unavailable. Audit UNION is read-only query — does not create M-025↔M-009 write-loop.</Contracts>
     </M-027>
 
     <M-028 NAME="AdminWebInterface" TYPE="ENTRY_POINT" verification-ref="V-M-028">
-      <Purpose>Provides private read-only admin web pages for login, process timeline, filters and .log export.</Purpose>
+      <Purpose>Provides private read-only admin web pages for login, process timeline (with audit events), filters and .log export.</Purpose>
       <TargetPath>src/memory_mcp/admin_web.py</TargetPath>
       <PublicInterface>
-        <fn-create_admin_routes id="KG-M-028-FN-001" flow-ref="DF-011" />
+        <fn-create_admin_routes id="KG-M-028-FN-001" flow-ref="DF-011"><note>Binds admin_db to config.process_event_db_path, admin_audit_db to config.audit.audit_db_path.</note></fn-create_admin_routes>
         <fn-render_login_page id="KG-M-028-FN-002" />
         <fn-render_dashboard_page id="KG-M-028-FN-003" />
         <fn-handle_log_export id="KG-M-028-FN-004" flow-ref="DF-012" />
       </PublicInterface>
-      <Contracts>Must require admin session, remain private-network scoped and never directly access Vault filesystem or audit internals.</Contracts>
+      <Contracts>Must require admin session, remain private-network scoped and never directly access Vault filesystem or audit internals. Dashboard DB paths resolved from ServerConfig, not hardcoded.</Contracts>
     </M-028>
+
+    <M-029 NAME="EmbeddingService" TYPE="UTILITY" verification-ref="V-M-029">
+      <Purpose>Generates text embedding vectors via OpenAI-compatible API (text-embedding-3-small, 1536 dimensions).</Purpose>
+      <TargetPath>src/memory_mcp/embedding_service.py</TargetPath>
+      <PublicInterface>
+        <fn-embed_text id="KG-M-029-FN-001" flow-ref="DF-014" />
+        <fn-embed_batch id="KG-M-029-FN-002" flow-ref="DF-014" />
+        <fn-embed_chunks id="KG-M-029-FN-003" flow-ref="DF-014" />
+        <type-ChunkEmbedding id="KG-M-029-TYPE-001" />
+      </PublicInterface>
+      <Contracts>API key read from env (api_key_env in config), never stored or logged. Model and dimensions from EmbeddingSettings. Must handle API errors with retry and degrade gracefully.</Contracts>
+    </M-029>
 
     <M-002 NAME="AuthIdentityService" TYPE="CORE_LOGIC" verification-ref="V-M-002">
       <Purpose>Resolves agent identity, API key, role and policy profile.</Purpose>
@@ -248,7 +260,7 @@
     </M-009>
 
     <M-010 NAME="RetrievalService" TYPE="CORE_LOGIC" verification-ref="V-M-010">
-      <Purpose>Provides keyword, FTS, optional semantic, similar-notes, wiki-source retrieval and explainable ranking.</Purpose>
+      <Purpose>Provides hybrid search (FTS + vector), similar-notes, wiki-source retrieval and explainable ranking.</Purpose>
       <TargetPath>src/memory_mcp/retrieval_service.py</TargetPath>
       <PublicInterface>
         <fn-search_notes id="KG-M-010-FN-001" />
@@ -256,7 +268,7 @@
         <fn-find_wiki_sources id="KG-M-010-FN-003" />
         <fn-explain_ranking id="KG-M-010-FN-004" />
       </PublicInterface>
-      <Contracts>Must filter denied paths after querying derivative indexes and must degrade to FTS when vector mode is disabled.</Contracts>
+      <Contracts>Must filter denied paths after querying derivative indexes and must degrade to FTS when vector mode is disabled. Hybrid search must UNION FTS and vector results with score merging.</Contracts>
     </M-010>
 
     <M-011 NAME="ConfigService" TYPE="UTILITY" verification-ref="V-M-011">
@@ -282,49 +294,54 @@
     </M-012>
 
     <M-013 NAME="IndexRepository" TYPE="DATA_LAYER" verification-ref="V-M-013">
-      <Purpose>Maintains SQLite metadata, FTS5, audit-index access and future vector tables derived from Vault files.</Purpose>
+      <Purpose>Maintains SQLite metadata, FTS5, vector tables (note_chunks_vec via sqlite-vec) and audit-index access derived from Vault files.</Purpose>
       <TargetPath>src/memory_mcp/index_repo.py</TargetPath>
       <PublicInterface>
         <fn-initialize_schema id="KG-M-013-FN-001" />
         <fn-upsert_note_index id="KG-M-013-FN-002" />
         <fn-delete_note_index id="KG-M-013-FN-003" />
         <fn-search_fts id="KG-M-013-FN-004" />
+        <fn-upsert_note_chunks id="KG-M-013-FN-005" />
+        <fn-delete_note_chunks id="KG-M-013-FN-006" />
+        <fn-query_similar id="KG-M-013-FN-007" />
       </PublicInterface>
-      <Contracts>Must initialize SQLite WAL, busy_timeout, FTS5 schema and revision-aware index_state.</Contracts>
+      <Contracts>Must initialize SQLite WAL, busy_timeout, FTS5 schema and note_chunks_vec virtual table. Vector queries use sqlite-vec vec0 similarity functions.</Contracts>
     </M-013>
 
     <M-014 NAME="IndexRefreshService" TYPE="CORE_LOGIC" verification-ref="V-M-014">
-      <Purpose>Rebuilds or incrementally updates the index from Vault content and affected_paths.</Purpose>
+      <Purpose>Rebuilds or incrementally updates the index (FTS + vectors) from Vault content and affected_paths.</Purpose>
       <TargetPath>src/memory_mcp/index_refresh.py</TargetPath>
       <PublicInterface>
         <fn-refresh_index id="KG-M-014-FN-001" />
         <fn-refresh_paths id="KG-M-014-FN-002" />
         <fn-refresh_wiki_folder id="KG-M-014-FN-003" />
         <fn-startup_reconcile id="KG-M-014-FN-004" />
+        <fn-reindex_all_vectors id="KG-M-014-FN-005" flow-ref="DF-014" />
       </PublicInterface>
-      <Contracts>Must treat Vault as source of truth and must be invoked by M-001 or background worker, not M-008.</Contracts>
+      <Contracts>Must treat Vault as source of truth and must be invoked by M-001 or background worker, not M-008. Vector generation during refresh uses M-029 and M-016. reindex_all_vectors is used at startup and after membank_init/apply.</Contracts>
     </M-014>
 
     <M-015 NAME="MarkdownSemanticParser" TYPE="UTILITY" verification-ref="V-M-015">
-      <Purpose>Extracts frontmatter, tags, links, headings, sections and validates post-apply Markdown shape.</Purpose>
+      <Purpose>Extracts frontmatter, tags, links, headings, sections, validates post-apply Markdown shape and chunks notes for embedding.</Purpose>
       <TargetPath>src/memory_mcp/markdown_parser.py</TargetPath>
       <PublicInterface>
         <fn-parse_markdown id="KG-M-015-FN-001" />
         <fn-extract_sections id="KG-M-015-FN-002" />
         <fn-validate_markdown_shape id="KG-M-015-FN-003" />
+        <fn-chunk_note id="KG-M-015-FN-004" flow-ref="DF-014" />
       </PublicInterface>
-      <Contracts>Parser output must be stable for indexing, patch validation and wiki source extraction.</Contracts>
+      <Contracts>Parser output must be stable for indexing, patch validation, wiki source extraction AND embedding chunking.</Contracts>
     </M-015>
 
     <M-016 NAME="VectorSearchAdapter" TYPE="INTEGRATION" verification-ref="V-M-016">
-      <Purpose>Provides optional vector search via disabled/sqlite-vec/qdrant-optional implementations.</Purpose>
+      <Purpose>Provides vector search via disabled/sqlite_vec/qdrant_optional implementations. SqliteVecVectorAdapter is the active backend with full upsert/query against note_chunks_vec.</Purpose>
       <TargetPath>src/memory_mcp/vector_adapter.py</TargetPath>
       <PublicInterface>
         <fn-create_vector_adapter id="KG-M-016-FN-001" />
-        <fn-upsert_vectors id="KG-M-016-FN-002" />
-        <fn-query_vectors id="KG-M-016-FN-003" />
+        <fn-upsert_vectors id="KG-M-016-FN-002" flow-ref="DF-014" />
+        <fn-query_vectors id="KG-M-016-FN-003" flow-ref="DF-014" />
       </PublicInterface>
-      <Contracts>Disabled mode must require no external dependency and vector failures must degrade to FTS.</Contracts>
+      <Contracts>Disabled mode must require no external dependency and vector failures must degrade to FTS. SqliteVecVectorAdapter must use M-013 note_chunks_vec. QdrantOptionalAdapter is future stub for migration.</Contracts>
     </M-016>
 
     <M-017 NAME="BackupService" TYPE="INTEGRATION" verification-ref="V-M-017">
@@ -357,6 +374,18 @@
       </PublicInterface>
       <Contracts>Must be single-file, trusted-only, dry-run required, no overwrite, no denylisted folder.</Contracts>
     </M-019>
+
+    <M-029 NAME="EmbeddingService" TYPE="UTILITY" verification-ref="V-M-029">
+      <Purpose>Generates text embedding vectors via OpenAI-compatible API (text-embedding-3-small, 1536 dimensions).</Purpose>
+      <TargetPath>src/memory_mcp/embedding_service.py</TargetPath>
+      <PublicInterface>
+        <fn-embed_text id="KG-M-029-FN-001" flow-ref="DF-014" />
+        <fn-embed_batch id="KG-M-029-FN-002" flow-ref="DF-014" />
+        <fn-embed_chunks id="KG-M-029-FN-003" flow-ref="DF-014" />
+        <type-ChunkEmbedding id="KG-M-029-TYPE-001" />
+      </PublicInterface>
+      <Contracts>API key read from env (api_key_env in config), never stored or logged. Model and dimensions from EmbeddingSettings. Must handle API errors with retry and degrade gracefully.</Contracts>
+    </M-029>
 
     <M-020 NAME="MCPTransport" TYPE="ENTRY_POINT" verification-ref="V-M-020">
       <Purpose>Provides aiohttp-based Streamable HTTP MCP transport with JSON-RPC 2.0 handling, Bearer token auth, and MCP method routing (initialize, tools/list, tools/call, ping).</Purpose>
@@ -422,6 +451,15 @@
     <CrossLink id="XL-058" from="M-028" to="M-027" relation="renders_dashboard_from" bidirectional="true" />
     <CrossLink id="XL-059" from="M-028" to="M-005" relation="forbidden_direct_filesystem_access" bidirectional="false" forbidden="true" />
     <CrossLink id="XL-060" from="M-025" to="M-009" relation="forbidden_process_audit_loop" bidirectional="false" forbidden="true" />
+    <!-- PH-010 + PH-011 crosslinks -->
+    <CrossLink id="XL-061" from="M-029" to="M-011" relation="uses_config" bidirectional="true" />
+    <CrossLink id="XL-062" from="M-016" to="M-029" relation="uses_embedding_for_query" bidirectional="true" />
+    <CrossLink id="XL-063" from="M-014" to="M-029" relation="uses_embedding_for_refresh" bidirectional="true" />
+    <CrossLink id="XL-064" from="M-015" to="M-029" relation="supplies_chunks_for_embedding" bidirectional="true" />
+    <CrossLink id="XL-065" from="M-013" to="M-016" relation="provides_vector_storage" bidirectional="true" />
+    <CrossLink id="XL-066" from="M-010" to="M-029" relation="uses_embedding_for_hybrid_query" bidirectional="true" />
+    <CrossLink id="XL-067" from="M-001" to="M-025" relation="records_process_events_at_server_lifecycle" bidirectional="true" />
+    <CrossLink id="XL-068" from="M-020" to="M-025" relation="records_process_events_at_transport_start" bidirectional="true" />
   </CrossLinks>
 
   <DataFlowLinks id="KG-FLOW-LINKS-001">
@@ -438,6 +476,8 @@
     <DataFlow id="DF-011" name="AdminDashboardAccess" modules="M-028 M-024 M-027 M-025 M-026 M-022 M-014 M-017" verification_ref="VF-DF-011" />
     <DataFlow id="DF-012" name="LogReportExport" modules="M-028 M-024 M-027 M-026 M-025 M-009" verification_ref="VF-DF-012" />
     <DataFlow id="DF-013" name="DestinationResolution" modules="M-001 M-003 M-022 M-008" verification_ref="VF-DF-013" />
+    <DataFlow id="DF-014" name="SemanticRetrievalAndVectorRefresh" modules="M-010 M-016 M-029 M-013 M-014 M-015 M-003" verification_ref="VF-DF-014" />
+    <DataFlow id="DF-015" name="ProcessEventProductionBridge" modules="M-012 M-025 M-001 M-020 M-023 M-013" verification_ref="VF-DF-015" />
   </DataFlowLinks>
 
   <PolicyLinks id="KG-POLICY-LINKS-001">
@@ -457,5 +497,8 @@
     <constraint id="KG-CONS-004">CrossLinks are navigational and do not override the dependency DAG in development-plan.xml.</constraint>
     <constraint id="KG-CONS-005">Directory Contract nodes must cover all agent-facing write destinations before get_instructions is considered complete.</constraint>
     <constraint id="KG-CONS-006">Admin dashboard nodes must remain read-only and must not bypass service aggregation to access Vault filesystem.</constraint>
+    <constraint id="KG-CONS-007">M-029 (EmbeddingService) API key must never be stored in config or logged — only resolved from env at runtime.</constraint>
+    <constraint id="KG-CONS-008">M-016 (sqlite_vec) must degrade to NoopVectorAdapter if sqlite-vec package is unavailable, preserving FTS-only operation.</constraint>
+    <constraint id="KG-CONS-009">Audit UNION in M-027 is read-only query — must not create M-025↔M-009 write-loop (forbidden edges DAG-FORBID-009/DAG-FORBID-010 intact).</constraint>
   </GraphIntegrity>
 </GRACEKnowledgeGraph>
