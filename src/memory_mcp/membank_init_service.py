@@ -16,6 +16,7 @@ from memory_mcp.observability import (
     log_trace_anchor,
     new_trace_id,
 )
+from memory_mcp.process_event_log import ProcessEvent, record_process_event
 from memory_mcp.vault_fs import write_file_atomic
 from memory_mcp.vault_layout import (
     DirectoryContract,
@@ -30,6 +31,36 @@ MODULE = "membank_init_service"
 MODULE_BLOCK = "M-023"
 
 PROJECTION_FILE = "AgentMemBank.md"
+
+
+def _record_init_event(
+    event_type: str,
+    severity: str,
+    agent_id: str,
+    trace_id: str,
+    mode: str,
+    message: str = "",
+    error_code: str = "",
+    config: ServerConfig | None = None,
+) -> None:
+    if config is None:
+        return
+    db_path = config.process_event_db_path or ""
+    if not db_path:
+        return
+    event = ProcessEvent(
+        event_type=event_type,
+        category="membank_init",
+        severity=severity,
+        agent_id=agent_id,
+        trace_id=trace_id,
+        message=message,
+        error_code=error_code,
+    )
+    try:
+        record_process_event(db_path, event)
+    except Exception:
+        pass
 
 
 @dataclass
@@ -260,11 +291,16 @@ async def membank_init(
 ) -> MemBankInitResult:
     valid_modes = {"check_only", "dry_run", "apply"}
     if mode not in valid_modes:
+        _record_init_event("membank_init.invalid_mode", "ERROR", agent_id, trace_id, mode,
+                           message=f"Unknown mode: {mode}", config=config)
         return MemBankInitResult(
             success=False,
             message=f"Unknown mode '{mode}'. Valid modes: {', '.join(sorted(valid_modes))}",
             trace_id=trace_id,
         )
+
+    _record_init_event("membank_init.started", "INFO", agent_id, trace_id, mode,
+                       message=f"Mode: {mode}", config=config)
 
     if mode == "check_only":
         layout_report = None
@@ -292,6 +328,8 @@ async def membank_init(
 
     if mode == "dry_run":
         plan = create_init_plan(vault_root, directory_contract)
+        _record_init_event("membank_init.plan_created", "INFO", agent_id, trace_id, mode,
+                           message=f"Dry-run: {len(plan.missing_directories)} missing dirs", config=config)
         return MemBankInitResult(
             success=True,
             message=(
@@ -355,6 +393,14 @@ async def membank_init(
             )
 
         plan = create_init_plan(vault_root, directory_contract)
-        return await apply_init_plan(plan, vault_root, agent_id, trace_id, config, profile)
+        result = await apply_init_plan(plan, vault_root, agent_id, trace_id, config, profile)
+        _record_init_event(
+            "membank_init.apply_completed" if result.success else "membank_init.apply_failed",
+            "INFO" if result.success else "ERROR",
+            agent_id, trace_id, mode,
+            message=result.message,
+            config=config,
+        )
+        return result
 
     return MemBankInitResult(success=False, message=f"Unhandled mode: {mode}", trace_id=trace_id)
