@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 from aiohttp import web
 
@@ -493,11 +494,11 @@ async def handle_log_export(request: web.Request) -> web.Response:
 
 def create_admin_routes(
     app: web.Application,
-    admin_auth_service=None,
-    dashboard_service=None,
-    log_report_service=None,
-    config=None,
-) -> list[web.RouteDef]:
+    admin_auth_service: Any = None,
+    dashboard_service: Any = None,
+    log_report_service: Any = None,
+    config: Any = None,
+) -> list[web.AbstractRoute]:
     app.router.add_get("/admin/login", render_login_page)
     app.router.add_post("/admin/login", _handle_login)
     app.router.add_get("/admin/dashboard", render_dashboard_page)

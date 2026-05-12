@@ -256,7 +256,7 @@ def _query_audit_for_trace(
 def _query_events_direct(
     conn: sqlite3.Connection,
     where_clause: str = "1=1",
-    params: tuple = (),
+    params: tuple[Any, ...] = (),
     order: str = "ORDER BY timestamp DESC",
     limit: int = 0,
 ) -> list[dict[str, Any]]:

@@ -6,7 +6,7 @@ import hashlib
 import secrets
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from memory_mcp.observability import (
