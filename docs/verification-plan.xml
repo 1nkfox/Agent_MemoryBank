@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<GRACEVerificationPlan id="VER-ROOT-001" project="AgentMemBank" status="approved" version="2.5" updated_at="2026-05-10">
+<GRACEVerificationPlan id="VER-ROOT-001" project="AgentMemBank" status="approved" version="2.6" updated_at="2026-05-11T23:51:37+03:00">
   <Metadata id="VER-META-001">
     <title>Verification Plan for AgentMemBank MCP Server — Autonomous-Ready</title>
     <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
     <approval>Architecture approved by user; verification gates are mandatory for autonomous execution.</approval>
-      <version_note>v2.0 adds: verification matrix, telemetry spec, test harness designs, failure packet format, autonomy gap assessment. v2.1: autonomy readiness updated to reflect implemented codebase. v2.2: M-020 HTTP transport added. v2.3: AgentMemBank UX, Directory Contract, membank_init, process logging and read-only admin dashboard contracts added. v2.4: write_note/create_note diff requirement, dry_run bypass detection and M-020 transport test contract hardened. v2.5: full verification run complete — 345 tests (343 passed, 2 skipped), all 9 phase gates PG-001..PG-009 pass, static boundaries intact, autonomy readiness confirmed READY for all 28 modules M-001..M-028.</version_note>
+      <version_note>v2.0 adds: verification matrix, telemetry spec, test harness designs, failure packet format, autonomy gap assessment. v2.1: autonomy readiness updated to reflect implemented codebase. v2.2: M-020 HTTP transport added. v2.3: AgentMemBank UX, Directory Contract, membank_init, process logging and read-only admin dashboard contracts added. v2.4: write_note/create_note diff requirement, dry_run bypass detection and M-020 transport test contract hardened. v2.5: full verification run complete — 345 tests (343 passed, 2 skipped), all 9 phase gates PG-001..PG-009 pass, static boundaries intact, autonomy readiness confirmed READY for all 28 modules M-001..M-028. v2.6: adds M-029 EmbeddingService, V-M-029, PH-010 (SemanticRetrievalActivation), PH-011 (ProcessEventAndAuditIntegration), DF-014, DF-015, extended V-M-010 for hybrid search, V-M-027 for audit UNION, V-M-028 for admin_db wiring fix.</version_note>
   </Metadata>
 
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -697,11 +697,11 @@
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <ModuleVerification id="MODULE-VERIFICATION-001">
     <ModuleCheck id="V-M-001" module_ref="M-001" target_path="src/memory_mcp/server.py" test_path="tests/test_server.py">
-      <checks>Tool routing applies auth/policy before services; calls M-014 only after affected_paths result; emits trace_id; diff field is present in all mutation tool responses (create/append/edit/write).</checks>
-      <local_gate>All registered tools have policy profile coverage; all mutation tools return diff.</local_gate>
-      <required_markers>request.received, request.completed, request.failed</required_markers>
+      <checks>Tool routing applies auth/policy before services; calls M-014 only after affected_paths result; emits trace_id; diff field is present in all mutation tool responses (create/append/edit/write). Records process events at server startup, tool registration, request.received, request.completed and request.failed via M-025.</checks>
+      <local_gate>All registered tools have policy profile coverage; all mutation tools return diff. Process events are queryable after server startup.</local_gate>
+      <required_markers>request.received, request.completed, request.failed, process_event.recorded</required_markers>
       <module_commands>
-        <command name="unit">pytest tests/test_server.py -v --timeout=30</command>
+        <command name="unit">pytest tests/test_server.py -v --timeout=60</command>
         <command name="typecheck">mypy src/memory_mcp/server.py</command>
         <command name="lint">ruff check src/memory_mcp/server.py</command>
       </module_commands>
@@ -786,17 +786,17 @@
     </ModuleCheck>
 
     <ModuleCheck id="V-M-010" module_ref="M-010" target_path="src/memory_mcp/retrieval_service.py" test_path="tests/test_retrieval_service.py">
-      <checks>Search filters denied paths; FTS works without vector backend; ranking explainable.</checks>
-      <local_gate>Denylisted stale index row does not reach response.</local_gate>
+      <checks>Hybrid search (FTS + vector) returns union of results with score merging; find_similar_notes returns vector-based matches; FTS works as fallback when vector disabled; ranking explainable with source attribution (fts/vector/hybrid); denied paths filtered.</checks>
+      <local_gate>Denylisted stale index row does not reach response. Hybrid search must not drop FTS results when vector returns fewer matches.</local_gate>
       <required_markers>retrieval.query.completed, retrieval.denied_path.filtered</required_markers>
       <module_commands>
-        <command name="unit">pytest tests/test_retrieval_service.py -v --timeout=30</command>
+        <command name="unit">pytest tests/test_retrieval_service.py -v --timeout=60</command>
       </module_commands>
     </ModuleCheck>
 
     <ModuleCheck id="V-M-011" module_ref="M-011" target_path="src/memory_mcp/config.py" test_path="tests/test_config.py">
-      <checks>Config loads transport, policy, audit, index and external sync settings.</checks>
-      <local_gate>Invalid or unsafe config fails closed.</local_gate>
+      <checks>Config loads transport, policy, audit, index, embedding, vector, process event paths and external sync settings. EmbeddingSettings validated: api_base, api_key_env, model, dimensions, batch_size. process_event_db_path defaults correctly.</checks>
+      <local_gate>Invalid or unsafe config fails closed. Embedding API key env var name is validated but value never stored.</local_gate>
       <required_markers>config.loaded, config.invalid</required_markers>
       <module_commands>
         <command name="unit">pytest tests/test_config.py -v --timeout=15</command>
@@ -812,34 +812,34 @@
     </ModuleCheck>
 
     <ModuleCheck id="V-M-013" module_ref="M-013" target_path="src/memory_mcp/index_repo.py" test_path="tests/test_index_repo.py">
-      <checks>SQLite FTS5 schema and WAL mode; index state tracks revision/content hash.</checks>
-      <local_gate>WAL mode and busy_timeout are asserted in tests.</local_gate>
-      <required_markers>index.schema.ready, index.fts.query.completed</required_markers>
+      <checks>SQLite FTS5 schema, WAL mode, note_chunks_vec virtual table via sqlite-vec; upsert_note_chunks deletes prior chunks before insert; query_similar returns top-K by cosine distance; index state tracks revision/content hash.</checks>
+      <local_gate>WAL mode, busy_timeout, FTS5 and vec0 virtual table all asserted. Vector queries fail gracefully when sqlite-vec unavailable.</local_gate>
+      <required_markers>index.schema.ready, index.fts.query.completed, index.vector.upsert.completed, index.vector.query.completed</required_markers>
       <module_commands>
         <command name="unit">pytest tests/test_index_repo.py -v --timeout=30</command>
       </module_commands>
     </ModuleCheck>
 
     <ModuleCheck id="V-M-014" module_ref="M-014" target_path="src/memory_mcp/index_refresh.py" test_path="tests/test_index_refresh.py">
-      <checks>refresh_paths handles affected_paths; startup reconcile detects external changes.</checks>
-      <local_gate>Refresh treats Vault files as source of truth.</local_gate>
-      <required_markers>index.refresh.started, index.refresh.completed</required_markers>
+      <checks>refresh_paths handles affected_paths for FTS + vectors; startup reconcile detects external changes including vector drift; reindex_all_vectors iterates all Vault .md files, chunks via M-015, generates embeddings via M-029, upserts via M-016.</checks>
+      <local_gate>Refresh treats Vault files as source of truth. Vector generation failures must not block FTS refresh. reindex_all_vectors idempotent.</local_gate>
+      <required_markers>index.refresh.started, index.refresh.completed, index.vector.reindex.started, index.vector.reindex.completed</required_markers>
       <module_commands>
-        <command name="unit">pytest tests/test_index_refresh.py -v --timeout=60</command>
+        <command name="unit">pytest tests/test_index_refresh.py -v --timeout=120</command>
       </module_commands>
     </ModuleCheck>
 
     <ModuleCheck id="V-M-015" module_ref="M-015" target_path="src/memory_mcp/markdown_parser.py" test_path="tests/test_markdown_parser.py">
-      <checks>Frontmatter, tags, headings and sections parsed; invalid markdown shapes rejected when required.</checks>
-      <local_gate>Parser output is stable for indexing and patch validation fixtures.</local_gate>
+      <checks>Frontmatter, tags, headings and sections parsed; invalid markdown shapes rejected; chunk_note splits content into heading-delimited chunks with correct chunk_id, heading, text and position.</checks>
+      <local_gate>Parser output is stable for indexing, patch validation AND embedding chunking fixtures.</local_gate>
       <module_commands>
         <command name="unit">pytest tests/test_markdown_parser.py -v --timeout=15</command>
       </module_commands>
     </ModuleCheck>
 
     <ModuleCheck id="V-M-016" module_ref="M-016" target_path="src/memory_mcp/vector_adapter.py" test_path="tests/test_vector_adapter.py">
-      <checks>disabled/sqlite_vec/qdrant_optional modes; vector failure degrades to FTS.</checks>
-      <local_gate>Disabled mode has no external dependency.</local_gate>
+      <checks>disabled/sqlite_vec/qdrant_optional modes; sqlite_vec adapter performs real upsert/query against M-013 note_chunks_vec; vector failure degrades to FTS; create_vector_adapter detects missing sqlite-vec and degrades to noop.</checks>
+      <local_gate>Disabled mode has no external dependency. Sqlite_vec adapter queries return correct top-K results matching known embeddings. Qdrant stub remains non-functional but import-safe.</local_gate>
       <module_commands>
         <command name="unit">pytest tests/test_vector_adapter.py -v --timeout=30</command>
       </module_commands>
@@ -872,7 +872,7 @@
     </ModuleCheck>
 
     <ModuleCheck id="V-M-020" module_ref="M-020" target_path="src/memory_mcp/transport.py" test_path="tests/test_transport.py">
-      <checks>JSON-RPC 2.0 parse errors handled; MCP initialize/tools/list/tools/call methods routed; Bearer token extracted; health endpoint returns modules.</checks>
+      <checks>JSON-RPC 2.0 parse errors handled; MCP initialize/tools/list/tools/call methods routed; Bearer token extracted; health endpoint returns modules. Records transport.started process event at startup.</checks>
       <local_gate>Unknown methods return method-not-found; empty body returns invalid request.</local_gate>
       <required_markers>transport.starting</required_markers>
       <module_commands>
@@ -930,19 +930,27 @@
       </module_commands>
     </ModuleCheck>
     <ModuleCheck id="V-M-027" module_ref="M-027" target_path="src/memory_mcp/admin_dashboard_service.py" test_path="tests/test_admin_dashboard_service.py">
-      <checks>Read-only dashboard aggregation, degraded mode, event filters, errors, file changes and layout warnings.</checks>
-      <local_gate>Dashboard responses are sanitized and contain no direct Vault content.</local_gate>
+      <checks>Read-only dashboard aggregation with process_events + audit_log UNION; degraded mode; event filters; errors; file changes and layout warnings.</checks>
+      <local_gate>Dashboard responses are sanitized and contain no direct Vault content. Audit UNION returns combined timeline without violating M-025↔M-009 forbidden edges.</local_gate>
       <required_markers>admin_dashboard.summary.generated, admin_dashboard.events.filtered, admin_dashboard.degraded</required_markers>
       <module_commands>
         <command name="unit">pytest tests/test_admin_dashboard_service.py -v --timeout=45</command>
       </module_commands>
     </ModuleCheck>
     <ModuleCheck id="V-M-028" module_ref="M-028" target_path="src/memory_mcp/admin_web.py" test_path="tests/test_admin_web.py">
-      <checks>Private admin routes, login page, session-gated dashboard, filters and .log download.</checks>
-      <local_gate>Unauthenticated access denied; AdminWebInterface does not directly access Vault filesystem or audit internals.</local_gate>
+      <checks>Private admin routes, login page, session-gated dashboard with unified process+audit events, filters and .log download. admin_db wired to config.process_event_db_path (not empty string). admin_audit_db set for audit UNION.</checks>
+      <local_gate>Unauthenticated access denied; AdminWebInterface does not directly access Vault filesystem or audit internals. Dashboard DB paths must be non-empty for deployed config.</local_gate>
       <required_markers>admin_web.request.received, admin_web.access.denied, admin_web.dashboard.rendered, admin_web.report.downloaded</required_markers>
       <module_commands>
         <command name="unit">pytest tests/test_admin_web.py -v --timeout=45</command>
+      </module_commands>
+    </ModuleCheck>
+    <ModuleCheck id="V-M-029" module_ref="M-029" target_path="src/memory_mcp/embedding_service.py" test_path="tests/test_embedding_service.py">
+      <checks>Single text embedding returns vector[1536]; batch embedding returns correct count; API key read from env, never in config or logs; handles API errors with graceful degradation.</checks>
+      <local_gate>API key never appears in any log output or error trace.</local_gate>
+      <required_markers>embedding.generated, embedding.batch.completed</required_markers>
+      <module_commands>
+        <command name="unit">pytest tests/test_embedding_service.py -v --timeout=30</command>
       </module_commands>
     </ModuleCheck>
   </ModuleVerification>
@@ -1140,6 +1148,27 @@
         <command name="integration">pytest tests/ -k "DF_010 or DF_011 or DF_012" --capture=log -v --timeout=120</command>
         <command name="static_boundary_check">static analysis: M-028 does not import M-005 or M-009; M-024 does not import M-002; M-009 and M-025 do not import each other</command>
       </gate_commands>
+      <autonomy_gate>PG-009 passes → Admin observability verified, read-only surface has no mutation path, process logging and .log export work.</autonomy_gate>
+    </PhaseGate>
+    <PhaseGate id="PG-010" phase_ref="PH-010" name="SemanticRetrievalActivation">
+      <requires>V-M-029 V-M-011 V-M-015 V-M-013 V-M-016 V-M-014 V-M-010 and VF-DF-014/VF-DF-003 pass.</requires>
+      <evidence>Embedding generation, sqlite-vec vector ops, hybrid search union, FTS fallback, full reindex smoke and redaction tests.</evidence>
+      <gate_commands>
+        <command name="unit">pytest tests/test_embedding_service.py tests/test_config.py tests/test_markdown_parser.py tests/test_index_repo.py tests/test_vector_adapter.py tests/test_index_refresh.py tests/test_retrieval_service.py -v --timeout=300</command>
+        <command name="integration">pytest tests/ -k "DF_014 or DF_003" --capture=log -v --timeout=120</command>
+        <command name="static_boundary_check">static analysis: M-008 does not import M-014; M-029 does not log API keys</command>
+      </gate_commands>
+      <autonomy_gate>PG-010 passes → Semantic retrieval is verified safe with hybrid search, vector degradation and full-reindex capability.</autonomy_gate>
+    </PhaseGate>
+    <PhaseGate id="PG-011" phase_ref="PH-011" name="ProcessEventAndAuditIntegration">
+      <requires>V-M-001 V-M-020 V-M-028 V-M-023 V-M-027 V-M-025 and VF-DF-010/VF-DF-011/VF-DF-015 pass.</requires>
+      <evidence>Process events recorded at server/transport/MCP lifecycle; admin dashboard DB wired correctly; audit UNION returns combined timeline; forbidden edges intact.</evidence>
+      <gate_commands>
+        <command name="unit">pytest tests/test_server.py tests/test_transport.py tests/test_admin_web.py tests/test_membank_init_service.py tests/test_admin_dashboard_service.py tests/test_process_event_log.py -v --timeout=180</command>
+        <command name="integration">pytest tests/ -k "DF_010 or DF_011 or DF_015" --capture=log -v --timeout=120</command>
+        <command name="static_boundary_check">static analysis: M-025 does not import M-009; M-009 does not import M-025; M-028.admin_db is not empty string</command>
+      </gate_commands>
+      <autonomy_gate>PG-011 passes → Process event recording active in production; admin dashboard shows unified operational timeline; forbidden audit/process-log edges preserved.</autonomy_gate>
     </PhaseGate>
   </PhaseGates>
 
@@ -1196,6 +1225,21 @@
       <condition>Admin dashboard provides or triggers Vault mutation, rollback, delete or direct filesystem access.</condition>
       <detection>Static boundary check finds M-028 -> M-005/M-009 or integration trace emits TA-007 from admin route.</detection>
       <action>Stop and restore read-only admin dashboard boundary.</action>
+    </StopCondition>
+    <StopCondition id="SC-011">
+      <condition>Embedding API key or raw request content appears in logs, dashboard, or error traces.</condition>
+      <detection>Redaction test finds API key value, Authorization header, or raw chunk text in M-029 log output.</detection>
+      <action>Stop and fix redaction in M-029 before any vector operations.</action>
+    </StopCondition>
+    <StopCondition id="SC-012">
+      <condition>Vector search returns results inconsistent with FTS, or hybrid search drops FTS matches when vector returns fewer results.</condition>
+      <detection>Integration test with known-content fixtures shows hybrid results ⊇ FTS results.</detection>
+      <action>Stop and fix result union/merging logic in M-010.search_notes.</action>
+    </StopCondition>
+    <StopCondition id="SC-013">
+      <condition>sqlite-vec unavailable in deployed environment but server crashes instead of degrading to FTS.</condition>
+      <detection>M-016.create_vector_adapter('sqlite_vec') returns NoopVectorAdapter without raising exception; retrieval still returns FTS results.</detection>
+      <action>Stop and fix sqlite-vec import handling in M-016.</action>
     </StopCondition>
   </StopConditions>
 
@@ -1505,7 +1549,7 @@
 
     <criterion id="AUTO-002" status="MET">
       <desc>Every M-xxx in development-plan has matching knowledge graph node and V-M-xxx verification entry.</desc>
-      <status>All planned modules M-001..M-028 have KG nodes and V-M entries. 1:1:1 mapping required before executing PH-008/PH-009.</status>
+      <status>All planned modules M-001..M-029 have KG nodes and V-M entries. 1:1:1 mapping required before executing PH-010/PH-011.</status>
     </criterion>
 
     <criterion id="AUTO-003" status="MET">
@@ -1550,10 +1594,9 @@
     </criterion>
 
     <overall_assessment>
-      <artifact_readiness>READY — GRACE artifacts include AgentMemBank UX, Directory Contract, admin observability, module contracts, flows, trace anchors and stop conditions. All five artifacts present and approved.</artifact_readiness>
-      <implementation_readiness>READY — M-001..M-028 fully implemented with 30 test files. Full suite: 345 collected, 343 passed, 2 skipped (symlink tests on Windows), 0 failed in 2.92s. All 9 phase gates PG-001..PG-009 pass.</implementation_readiness>
-      <verification_run_summary>2026-05-10T21:43+03:00 | Python 3.13.5 | 345 tests | 343 passed | 2 skipped | 0 failed | 2.92s | Lint: 29 F401/F841 (cosmetic) | Mypy: 562 no-untyped-def warnings (test code, non-blocking) | Static boundaries: all intact | SC-001..SC-010: all verified</verification_run_summary>
-      <next_milestone>Clean lint warnings (29 unused imports/assignments) for cosmetic hygiene. Optional: add type annotations to test helpers to reduce mypy noise.</next_milestone>
+      <artifact_readiness>READY — GRACE artifacts include AgentMemBank UX, Directory Contract, admin observability, semantic retrieval (M-029, PH-010) and process event integration (PH-011). All five artifacts present and approved at v1.3+.</artifact_readiness>
+      <implementation_readiness>AWAITING_EXECUTION — PH-010 (SemanticRetrievalActivation) and PH-011 (ProcessEventAndAuditIntegration) planned but not yet implemented. Existing M-001..M-028 fully implemented with phase gates PG-001..PG-009 passed.</implementation_readiness>
+      <next_milestone>Execute PH-010 (7 steps: M-029, M-011 emb config, M-015 chunking, M-013 sqlite-vec, M-016 adapter, M-014 reindex, M-010 hybrid search) then PH-011 (5 steps: process event recording, admin_db fix, audit UNION).</next_milestone>
       <autonomous_execution_safe>READY — All 10 stop conditions verified. All 9 phase gates pass. All 13 critical flows have passing scenarios. Existing safe mutation/search baseline intact. Agent UX/Admin surfaces pass SC-008, SC-009, SC-010. Project is safe for autonomous and multi-agent execution.</autonomous_execution_safe>
     </overall_assessment>
   </AutonomyReadiness>

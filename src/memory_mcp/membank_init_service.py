@@ -306,7 +306,7 @@ async def membank_init(
         layout_report = None
         try:
             layout_report = detect_vault_layout(vault_root, require_obsidian_marker=True)
-        except Exception as exc:
+        except Exception:
             pass
 
         actual_dirs = _list_actual_dirs(vault_root)

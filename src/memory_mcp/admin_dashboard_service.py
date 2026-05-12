@@ -545,8 +545,6 @@ def get_process_detail(
     event_id: int,
     trace_id: str,
 ) -> ProcessDetail | None:
-    request_trace = trace_id or new_trace_id()
-
     conn = _connect(db)
     conn.row_factory = sqlite3.Row
     _ensure_schema(conn)

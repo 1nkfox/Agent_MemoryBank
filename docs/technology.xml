@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<GRACETechnology id="TECH-ROOT-001" project="AgentMemBank" status="approved" version="1.2" updated_at="2026-05-10T17:00:00+03:00">
+<GRACETechnology id="TECH-ROOT-001" project="AgentMemBank" status="approved" version="1.3" updated_at="2026-05-11T23:51:37+03:00">
   <Metadata id="TECH-META-001">
     <title>Technology Decisions for AgentMemBank MCP Server</title>
     <source_document>docs/obsidian-memory-mcp-architecture-draft.md</source_document>
@@ -59,15 +59,26 @@
 
   <SearchStack id="SEARCH-001">
     <baseline_backend id="TECH-SRCH-001">SQLite FTS5</baseline_backend>
-    <future_vector_backend id="TECH-SRCH-002">sqlite-vec</future_vector_backend>
-    <optional_vector_backend id="TECH-SRCH-003">qdrant_optional</optional_vector_backend>
+    <active_vector_backend id="TECH-SRCH-002">sqlite-vec (active for PH-010, local-first, same index.db)</active_vector_backend>
+    <future_vector_backend id="TECH-SRCH-003">qdrant_optional (stub for future migration when vault exceeds ~100K notes)</future_vector_backend>
     <vector_adapter_modes id="TECH-SRCH-004">
       <mode id="VA-MODE-001">disabled</mode>
-      <mode id="VA-MODE-002">sqlite_vec</mode>
-      <mode id="VA-MODE-003">qdrant_optional</mode>
+      <mode id="VA-MODE-002">sqlite_vec (active)</mode>
+      <mode id="VA-MODE-003">qdrant_optional (future)</mode>
     </vector_adapter_modes>
-    <rationale>FTS5 is reliable and rebuildable for MVP. sqlite-vec is preferred after MVP because it preserves local-first deployment; Qdrant remains optional for larger Vaults.</rationale>
+    <hybrid_search id="TECH-SRCH-005" strategy="vector_fts_union">Query embedded via M-029 → vector search via M-016 → FTS search → UNION results by path (max score) → policy filter.</hybrid_search>
+    <rationale>FTS5 is reliable and rebuildable. sqlite-vec adds semantic retrieval while preserving local-first deployment. Qdrant remains optional for larger Vaults. Hybrid UNION ensures vector search never reduces recall vs FTS alone.</rationale>
   </SearchStack>
+
+  <EmbeddingStack id="EMBED-001">
+    <provider id="TECH-EMB-001">OpenAI-compatible API (openai Python package or httpx)</provider>
+    <model id="TECH-EMB-002">text-embedding-3-small</model>
+    <dimensions id="TECH-EMB-003">1536</dimensions>
+    <api_key_source id="TECH-EMB-004">environment variable, referenced by api_key_env config field</api_key_source>
+    <batch_strategy id="TECH-EMB-005">Batch requests up to 100 chunks per API call (configurable batch_size)</batch_strategy>
+    <retry id="TECH-EMB-006">Exponential backoff on API errors; degrade gracefully (skip chunk, continue)</retry>
+    <rationale>OpenAI-compatible API gives model provider flexibility. API key never stored in config — resolved from env at runtime. Local model support (sentence-transformers) can be added later as alternative backend.</rationale>
+  </EmbeddingStack>
 
   <IndexSchema id="IDX-SCHEMA-001">
     <table id="IDX-TBL-001">notes</table>
